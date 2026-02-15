@@ -1,3 +1,4 @@
+use crate::agent::tool_loop::{run_tool_loop, ToolLoopConfig};
 use crate::config::Config;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::observability::{self, Observer, ObserverEvent};
@@ -426,7 +427,7 @@ pub async fn run(
 
     // ── Build system prompt from workspace MD files (OpenClaw framework) ──
     let skills = crate::skills::load_skills(&config.workspace_dir);
-    let mut tool_descs: Vec<(&str, &str)> = vec![
+    let tool_descs: Vec<(&str, &str)> = vec![
         (
             "shell",
             "Execute terminal commands. Use when: running local checks, build/test commands, diagnostics. Don't use when: a safer dedicated tool exists, or command is destructive without approval.",

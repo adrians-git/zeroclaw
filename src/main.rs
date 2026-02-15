@@ -75,7 +75,7 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone, Copy)]
 enum ServiceCommands {
     /// Install daemon service unit for auto-start and restart
     Install,

@@ -190,11 +190,15 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     let actual_port = listener.local_addr()?.port();
     let display_addr = format!("{host}:{actual_port}");
 
-    let provider: Arc<dyn Provider> = Arc::from(providers::create_resilient_provider(
-        config.default_provider.as_deref().unwrap_or("openrouter"),
-        config.api_key.as_deref(),
-        &config.reliability,
-    )?);
+    let provider: Arc<RwLock<Arc<dyn Provider>>> = Arc::new(RwLock::new(Arc::from(
+        providers::create_resilient_provider(
+            config.default_provider.as_deref().unwrap_or("openrouter"),
+            config.api_key.as_deref(),
+            &config.reliability,
+        )?,
+    )));
+    let api_key: Option<Arc<str>> = config.api_key.as_deref().map(Arc::from);
+    let reliability_config = Arc::new(config.reliability.clone());
     let model = config
         .default_model
         .clone()
@@ -205,6 +209,44 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         &config.workspace_dir,
         config.api_key.as_deref(),
     )?);
+
+    // ── Security + Tools + Tool Loop Config + System Prompt ─────
+    let security = Arc::new(SecurityPolicy::from_config(
+        &config.autonomy,
+        &config.workspace_dir,
+    ));
+    let composio_key = if config.composio.enabled {
+        config.composio.api_key.as_deref()
+    } else {
+        None
+    };
+    let tool_registry: Arc<Vec<Box<dyn Tool>>> = Arc::new(tools::all_tools(
+        &security,
+        mem.clone(),
+        composio_key,
+        &config.browser,
+    ));
+    let tool_loop_config = Arc::new(ToolLoopConfig {
+        max_iterations: config.agent.max_tool_iterations,
+        max_tokens: config.agent.max_tokens,
+    });
+
+    // Build system prompt
+    let skills = crate::skills::load_skills(&config.workspace_dir);
+    let tool_descs: Vec<(&str, &str)> = vec![
+        ("shell", "Execute terminal commands"),
+        ("file_read", "Read file contents"),
+        ("file_write", "Write file contents"),
+        ("memory_store", "Save to memory"),
+        ("memory_recall", "Search memory"),
+        ("memory_forget", "Delete a memory entry"),
+    ];
+    let system_prompt: Arc<str> = Arc::from(crate::channels::build_system_prompt(
+        &config.workspace_dir,
+        &model,
+        &tool_descs,
+        &skills,
+    ));
 
     // Extract webhook secret for authentication
     let webhook_secret: Option<Arc<str>> = config
@@ -256,6 +298,25 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     let idempotency_store = Arc::new(IdempotencyStore::new(Duration::from_secs(
         config.gateway.idempotency_ttl_secs.max(1),
     )));
+
+    // ── Runtime settings (mutable via web UI) ──────────────
+    let initial_provider_name = config
+        .default_provider
+        .as_deref()
+        .unwrap_or("openrouter")
+        .to_string();
+    let runtime_settings = Arc::new(RwLock::new(RuntimeSettings {
+        provider_name: initial_provider_name,
+        model: model.clone(),
+        temperature,
+        max_iterations: config.agent.max_tool_iterations,
+        max_tokens: config.agent.max_tokens,
+    }));
+
+    // ── Shared config values for API endpoints ─────────────
+    let memory_backend: Arc<str> = Arc::from(config.memory.backend.as_str());
+    let autonomy_level: Arc<str> = Arc::from(format!("{:?}", config.autonomy.level).to_lowercase());
+    let workspace_dir: Arc<str> = Arc::from(config.workspace_dir.to_string_lossy().as_ref());
 
     // ── Tunnel ────────────────────────────────────────────────
     let tunnel = crate::tunnel::create_tunnel(&config.tunnel)?;
@@ -1172,5 +1233,77 @@ mod tests {
             body,
             &signature_header
         ));
+    }
+
+    // ── extract_query_param tests ────────────────────────────
+
+    #[test]
+    fn query_param_basic() {
+        assert_eq!(
+            extract_query_param("/api/memory?q=hello&limit=10", "q"),
+            Some("hello")
+        );
+        assert_eq!(
+            extract_query_param("/api/memory?q=hello&limit=10", "limit"),
+            Some("10")
+        );
+    }
+
+    #[test]
+    fn query_param_missing() {
+        assert_eq!(extract_query_param("/api/memory", "q"), None);
+        assert_eq!(
+            extract_query_param("/api/memory?q=hello", "limit"),
+            None
+        );
+    }
+
+    #[test]
+    fn query_param_no_query_string() {
+        assert_eq!(extract_query_param("/api/memory", "q"), None);
+    }
+
+    // ── urldecode tests ──────────────────────────────────────
+
+    #[test]
+    fn urldecode_basic() {
+        assert_eq!(urldecode("hello%20world"), "hello world");
+        assert_eq!(urldecode("foo+bar"), "foo bar");
+        assert_eq!(urldecode("no%2Fslash"), "no/slash");
+    }
+
+    #[test]
+    fn urldecode_passthrough() {
+        assert_eq!(urldecode("plain"), "plain");
+    }
+
+    // ── check_bearer_auth tests ──────────────────────────────
+
+    #[test]
+    fn bearer_auth_pairing_disabled() {
+        let guard = PairingGuard::new(false, &[]);
+        let req = "GET /api/status HTTP/1.1\r\n\r\n";
+        assert!(check_bearer_auth(req, &guard).is_ok());
+    }
+
+    #[test]
+    fn bearer_auth_valid_token() {
+        let guard = PairingGuard::new(true, &["zc_test".into()]);
+        let req = "GET /api/status HTTP/1.1\r\nAuthorization: Bearer zc_test\r\n\r\n";
+        assert!(check_bearer_auth(req, &guard).is_ok());
+    }
+
+    #[test]
+    fn bearer_auth_invalid_token() {
+        let guard = PairingGuard::new(true, &["zc_test".into()]);
+        let req = "GET /api/status HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n";
+        assert!(check_bearer_auth(req, &guard).is_err());
+    }
+
+    #[test]
+    fn bearer_auth_missing_header() {
+        let guard = PairingGuard::new(true, &["zc_test".into()]);
+        let req = "GET /api/status HTTP/1.1\r\n\r\n";
+        assert!(check_bearer_auth(req, &guard).is_err());
     }
 }

@@ -67,27 +67,70 @@ impl OpenAiCompatibleProvider {
     }
 }
 
+// ── Wire types (OpenAI format) ──────────────────────────────────
+
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,
     messages: Vec<Message>,
     temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Message {
+    role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<WireToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WireToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    call_type: String,
+    function: WireFunction,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WireFunction {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Debug, Serialize)]
-struct Message {
-    role: String,
-    content: String,
+struct ToolDefinition {
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: FunctionDef,
+}
+
+#[derive(Debug, Serialize)]
+struct FunctionDef {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
 struct ApiChatResponse {
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<WireUsage>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Choice {
     message: ResponseMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -243,31 +286,30 @@ impl Provider for OpenAiCompatibleProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "{} API key not set. Run `zeroclaw onboard` or set the appropriate env var.",
-                self.name
-            )
-        })?;
-
         let mut messages = Vec::new();
 
         if let Some(sys) = system_prompt {
             messages.push(Message {
                 role: "system".to_string(),
-                content: sys.to_string(),
+                content: Some(sys.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
             });
         }
 
         messages.push(Message {
             role: "user".to_string(),
-            content: message.to_string(),
+            content: Some(message.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
         });
 
         let request = ChatRequest {
             model: model.to_string(),
             messages,
             temperature,
+            tools: None,
+            max_tokens: None,
         };
 
         let url = self.chat_completions_url();
@@ -408,6 +450,79 @@ impl Provider for OpenAiCompatibleProvider {
             })
             .ok_or_else(|| anyhow::anyhow!("No response from {}", self.name))
     }
+
+    async fn chat_with_tools(
+        &self,
+        system_prompt: Option<&str>,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        model: &str,
+        temperature: f64,
+        max_tokens: u32,
+    ) -> anyhow::Result<LlmResponse> {
+        let mut wire_messages = Vec::new();
+
+        if let Some(sys) = system_prompt {
+            wire_messages.push(Message {
+                role: "system".to_string(),
+                content: Some(sys.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
+        wire_messages.extend(convert_messages(messages));
+
+        let tool_defs = if tools.is_empty() {
+            None
+        } else {
+            Some(convert_tools(tools))
+        };
+
+        let request = ChatRequest {
+            model: model.to_string(),
+            messages: wire_messages,
+            temperature,
+            tools: tool_defs,
+            max_tokens: Some(max_tokens),
+        };
+
+        let chat_response = self.send_request(&request).await?;
+        parse_response(chat_response, &self.name)
+    }
+
+    async fn list_models(&self) -> anyhow::Result<Vec<ModelInfo>> {
+        let url = format!("{}/v1/models", self.base_url);
+        let req = if let Ok(api_key) = self.api_key() {
+            self.apply_auth(self.client.get(&url), api_key)
+        } else {
+            self.client.get(&url)
+        };
+        let Ok(response) = req.send().await else {
+            return Ok(vec![]);
+        };
+        if !response.status().is_success() {
+            return Ok(vec![]);
+        }
+        let Ok(body) = response.json::<serde_json::Value>().await else {
+            return Ok(vec![]);
+        };
+        let mut models: Vec<ModelInfo> = body["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        Some(ModelInfo {
+                            id: m["id"].as_str()?.to_string(),
+                            owned_by: m["owned_by"].as_str().map(ToString::to_string),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(models)
+    }
 }
 
 #[cfg(test)]
@@ -458,14 +573,20 @@ mod tests {
             messages: vec![
                 Message {
                     role: "system".to_string(),
-                    content: "You are ZeroClaw".to_string(),
+                    content: Some("You are ZeroClaw".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 Message {
                     role: "user".to_string(),
-                    content: "hello".to_string(),
+                    content: Some("hello".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
             ],
             temperature: 0.7,
+            tools: None,
+            max_tokens: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("llama-3.3-70b"));

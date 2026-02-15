@@ -257,6 +257,35 @@ impl Default for SecretsConfig {
     }
 }
 
+// ── Agent (tool loop settings) ───────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// Maximum tool calling iterations per request
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: u32,
+    /// Max tokens for LLM responses in tool loop
+    #[serde(default = "default_agent_max_tokens")]
+    pub max_tokens: u32,
+}
+
+fn default_max_tool_iterations() -> u32 {
+    10
+}
+
+fn default_agent_max_tokens() -> u32 {
+    4096
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_tool_iterations: default_max_tool_iterations(),
+            max_tokens: default_agent_max_tokens(),
+        }
+    }
+}
+
 // ── Browser (friendly-service browsing only) ───────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -220,7 +220,7 @@ fn read_openclaw_markdown_entries(source_workspace: &Path) -> Result<Vec<SourceE
         all.extend(parse_markdown_file(
             &core_path,
             &content,
-            MemoryCategory::Core,
+            &MemoryCategory::Core,
             "openclaw_core",
         ));
     }
@@ -241,7 +241,7 @@ fn read_openclaw_markdown_entries(source_workspace: &Path) -> Result<Vec<SourceE
             all.extend(parse_markdown_file(
                 &path,
                 &content,
-                MemoryCategory::Daily,
+                &MemoryCategory::Daily,
                 stem,
             ));
         }
@@ -254,7 +254,7 @@ fn read_openclaw_markdown_entries(source_workspace: &Path) -> Result<Vec<SourceE
 fn parse_markdown_file(
     _path: &Path,
     content: &str,
-    default_category: MemoryCategory,
+    default_category: &MemoryCategory,
     stem: &str,
 ) -> Vec<SourceEntry> {
     let mut entries = Vec::new();
@@ -459,7 +459,7 @@ mod tests {
         let entries = parse_markdown_file(
             Path::new("/tmp/MEMORY.md"),
             "- plain note",
-            MemoryCategory::Core,
+            &MemoryCategory::Core,
             "core",
         );
         assert_eq!(entries.len(), 1);

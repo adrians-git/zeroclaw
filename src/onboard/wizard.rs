@@ -1,8 +1,8 @@
 use crate::config::schema::{IrcConfig, WhatsAppConfig};
 use crate::config::{
-    AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config, DiscordConfig,
-    HeartbeatConfig, IMessageConfig, MatrixConfig, MemoryConfig, ObservabilityConfig,
-    RuntimeConfig, SecretsConfig, SlackConfig, TelegramConfig, WebhookConfig,
+    AgentConfig, AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config,
+    DiscordConfig, HeartbeatConfig, IMessageConfig, MatrixConfig, MemoryConfig,
+    ObservabilityConfig, RuntimeConfig, SecretsConfig, SlackConfig, TelegramConfig, WebhookConfig,
 };
 use anyhow::{Context, Result};
 use console::style;

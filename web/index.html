@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZeroClaw</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            surface: { DEFAULT: '#12121a', light: '#1a1a24' },
+            bg: '#0a0a0f',
+            border: '#27272a',
+            accent: { DEFAULT: '#6366f1', hover: '#818cf8' },
+            txt: { DEFAULT: '#e4e4e7', dim: '#71717a', muted: '#52525b' },
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body { background: #0a0a0f; color: #e4e4e7; font-family: 'Inter', system-ui, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+    .thinking-dot { animation: pulse 1.4s infinite ease-in-out both; }
+    .thinking-dot:nth-child(1) { animation-delay: -0.32s; }
+    .thinking-dot:nth-child(2) { animation-delay: -0.16s; }
+    @keyframes pulse { 0%, 80%, 100% { transform: scale(0); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
+    textarea { resize: none; field-sizing: content; min-height: 44px; max-height: 200px; }
+    details summary { cursor: pointer; list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary .chevron { transform: rotate(90deg); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .status-ok { background: #22c55e; box-shadow: 0 0 6px #22c55e40; }
+    .status-error { background: #ef4444; box-shadow: 0 0 6px #ef444440; }
+    .status-warn { background: #f59e0b; box-shadow: 0 0 6px #f59e0b40; }
+    .fade-in { animation: fadeIn 0.2s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .nav-item.active { background: #1a1a24; color: #e4e4e7; border-left: 2px solid #6366f1; }
+    .nav-item { border-left: 2px solid transparent; }
+  </style>
+</head>
+<body class="h-screen overflow-hidden flex">
+
+  <!-- Pairing Modal -->
+  <div id="pairing-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden">
+    <div class="bg-surface border border-border rounded-xl p-8 w-full max-w-sm shadow-2xl">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center">
+          <svg class="w-5 h-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+        </div>
+        <div>
+          <h2 class="text-lg font-semibold text-txt">Pair with ZeroClaw</h2>
+          <p class="text-sm text-txt-dim">Enter the 6-digit code from your terminal</p>
+        </div>
+      </div>
+      <input id="pairing-code" type="text" maxlength="6" pattern="[0-9]*" inputmode="numeric"
+        class="w-full bg-bg border border-border rounded-lg px-4 py-3 text-center text-2xl font-mono tracking-[0.5em] text-txt placeholder-txt-muted focus:outline-none focus:border-accent transition"
+        placeholder="000000">
+      <div id="pairing-error" class="mt-3 text-sm text-red-400 hidden"></div>
+      <button id="pairing-submit" onclick="App.pair()"
+        class="mt-4 w-full bg-accent hover:bg-accent-hover text-white font-medium rounded-lg px-4 py-2.5 transition disabled:opacity-50 disabled:cursor-not-allowed">
+        Connect
+      </button>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <aside class="w-56 flex-shrink-0 bg-surface border-r border-border flex flex-col h-screen">
+    <div class="px-4 py-5 border-b border-border">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
+          <span class="text-accent font-mono font-bold text-sm">ZC</span>
+        </div>
+        <div>
+          <h1 class="font-semibold text-sm text-txt">ZeroClaw</h1>
+          <p class="text-xs text-txt-dim font-mono">v0.1.0</p>
+        </div>
+      </div>
+    </div>
+    <nav class="flex-1 py-3 px-2 space-y-0.5">
+      <button data-panel="chat" class="nav-item active w-full text-left px-3 py-2 rounded-md text-sm font-medium text-txt-dim hover:text-txt hover:bg-surface-light transition flex items-center gap-2.5" onclick="App.navigate('chat')">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+        Chat
+      </button>
+      <button data-panel="settings" class="nav-item w-full text-left px-3 py-2 rounded-md text-sm font-medium text-txt-dim hover:text-txt hover:bg-surface-light transition flex items-center gap-2.5" onclick="App.navigate('settings')">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        Settings
+      </button>
+      <button data-panel="memory" class="nav-item w-full text-left px-3 py-2 rounded-md text-sm font-medium text-txt-dim hover:text-txt hover:bg-surface-light transition flex items-center gap-2.5" onclick="App.navigate('memory')">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/></svg>
+        Memory
+      </button>
+      <button data-panel="tools" class="nav-item w-full text-left px-3 py-2 rounded-md text-sm font-medium text-txt-dim hover:text-txt hover:bg-surface-light transition flex items-center gap-2.5" onclick="App.navigate('tools')">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>
+        Tools
+      </button>
+      <button data-panel="status" class="nav-item w-full text-left px-3 py-2 rounded-md text-sm font-medium text-txt-dim hover:text-txt hover:bg-surface-light transition flex items-center gap-2.5" onclick="App.navigate('status')">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        Status
+      </button>
+    </nav>
+    <div class="px-4 py-3 border-t border-border">
+      <div id="conn-status" class="flex items-center gap-2 text-xs text-txt-dim">
+        <span class="status-dot status-warn"></span>
+        <span>connecting...</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="flex-1 flex flex-col h-screen overflow-hidden">
+
+    <!-- Chat Panel -->
+    <div id="panel-chat" class="panel flex-1 flex flex-col h-full">
+      <div class="px-6 py-4 border-b border-border flex-shrink-0">
+        <h2 class="font-semibold text-txt">Chat</h2>
+        <p class="text-xs text-txt-dim mt-0.5">Talk to your ZeroClaw agent</p>
+      </div>
+      <div id="chat-messages" class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+        <div class="text-center text-txt-muted text-sm py-12">
+          <div class="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center mx-auto mb-3">
+            <span class="text-accent font-mono font-bold text-lg">ZC</span>
+          </div>
+          <p class="font-medium text-txt-dim">Welcome to ZeroClaw</p>
+          <p class="mt-1">Send a message to start a conversation</p>
+        </div>
+      </div>
+      <div class="px-6 py-4 border-t border-border flex-shrink-0">
+        <div class="flex gap-3 items-end">
+          <textarea id="chat-input"
+            class="flex-1 bg-surface border border-border rounded-lg px-4 py-3 text-sm text-txt placeholder-txt-muted focus:outline-none focus:border-accent transition font-sans"
+            placeholder="Send a message... (Enter to send, Shift+Enter for newline)"
+            rows="1"
+            onkeydown="App.handleChatKey(event)"></textarea>
+          <button id="chat-send" onclick="App.sendChat()"
+            class="bg-accent hover:bg-accent-hover text-white rounded-lg px-4 py-3 transition flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="panel-settings" class="panel flex-1 flex flex-col h-full hidden">
+      <div class="px-6 py-4 border-b border-border flex-shrink-0">
+        <h2 class="font-semibold text-txt">Settings</h2>
+        <p class="text-xs text-txt-dim mt-0.5">Configure runtime parameters</p>
+      </div>
+      <div class="flex-1 overflow-y-auto px-6 py-6">
+        <div class="max-w-lg space-y-6">
+          <div>
+            <label class="block text-sm font-medium text-txt-dim mb-1.5">Provider</label>
+            <select id="settings-provider"
+              class="w-full bg-bg border border-border rounded-lg px-4 py-2.5 text-sm text-txt font-mono focus:outline-none focus:border-accent transition appearance-none cursor-pointer"
+              onchange="App.onProviderChange()">
+              <option value="">Loading...</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-txt-dim mb-1.5">Model</label>
+            <div class="relative" id="model-combo">
+              <input id="settings-model" type="text" autocomplete="off"
+                class="w-full bg-bg border border-border rounded-lg px-4 py-2.5 text-sm text-txt font-mono focus:outline-none focus:border-accent transition"
+                placeholder="Type or select a model..."
+                oninput="App.filterModels()"
+                onfocus="App.showModelDropdown()"
+                onkeydown="App.handleModelKey(event)">
+              <div id="model-dropdown"
+                class="hidden absolute z-10 left-0 right-0 top-full mt-1 bg-surface border border-border rounded-lg shadow-xl max-h-56 overflow-y-auto">
+              </div>
+            </div>
+            <p id="model-loading" class="text-xs text-txt-muted mt-1 hidden">Loading models...</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-txt-dim mb-1.5">Temperature <span id="settings-temp-val" class="text-accent font-mono">0.7</span></label>
+            <input id="settings-temperature" type="range" min="0" max="2" step="0.1" value="0.7"
+              class="w-full accent-accent"
+              oninput="document.getElementById('settings-temp-val').textContent = this.value">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-txt-dim mb-1.5">Max Iterations</label>
+            <input id="settings-max-iterations" type="number" min="1" max="50"
+              class="w-full bg-bg border border-border rounded-lg px-4 py-2.5 text-sm text-txt font-mono focus:outline-none focus:border-accent transition"
+              placeholder="10">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-txt-dim mb-1.5">Max Tokens</label>
+            <input id="settings-max-tokens" type="number" min="256" max="32768"
+              class="w-full bg-bg border border-border rounded-lg px-4 py-2.5 text-sm text-txt font-mono focus:outline-none focus:border-accent transition"
+              placeholder="4096">
+          </div>
+          <div class="pt-2">
+            <button onclick="App.saveSettings()"
+              class="bg-accent hover:bg-accent-hover text-white font-medium rounded-lg px-5 py-2.5 text-sm transition">
+              Save Settings
+            </button>
+            <span id="settings-feedback" class="ml-3 text-sm hidden"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Memory Panel -->
+    <div id="panel-memory" class="panel flex-1 flex flex-col h-full hidden">
+      <div class="px-6 py-4 border-b border-border flex-shrink-0">
+        <h2 class="font-semibold text-txt">Memory</h2>
+        <p class="text-xs text-txt-dim mt-0.5">Browse and manage stored memories</p>
+      </div>
+      <div class="px-6 py-4 border-b border-border flex gap-3 flex-shrink-0">
+        <input id="memory-search" type="text"
+          class="flex-1 bg-bg border border-border rounded-lg px-4 py-2 text-sm text-txt placeholder-txt-muted focus:outline-none focus:border-accent transition"
+          placeholder="Search memories..."
+          onkeydown="if(event.key==='Enter') App.loadMemory()">
+        <select id="memory-category"
+          class="bg-bg border border-border rounded-lg px-3 py-2 text-sm text-txt focus:outline-none focus:border-accent transition">
+          <option value="">All categories</option>
+          <option value="core">Core</option>
+          <option value="daily">Daily</option>
+          <option value="conversation">Conversation</option>
+        </select>
+        <button onclick="App.loadMemory()"
+          class="bg-surface border border-border hover:border-accent text-txt-dim hover:text-txt rounded-lg px-4 py-2 text-sm transition">
+          Search
+        </button>
+      </div>
+      <div id="memory-list" class="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+        <div class="text-center text-txt-muted text-sm py-12">Loading memories...</div>
+      </div>
+    </div>
+
+    <!-- Tools Panel -->
+    <div id="panel-tools" class="panel flex-1 flex flex-col h-full hidden">
+      <div class="px-6 py-4 border-b border-border flex-shrink-0">
+        <h2 class="font-semibold text-txt">Tools</h2>
+        <p class="text-xs text-txt-dim mt-0.5">Available agent capabilities</p>
+      </div>
+      <div id="tools-list" class="flex-1 overflow-y-auto px-6 py-4">
+        <div class="text-center text-txt-muted text-sm py-12">Loading tools...</div>
+      </div>
+    </div>
+
+    <!-- Status Panel -->
+    <div id="panel-status" class="panel flex-1 flex flex-col h-full hidden">
+      <div class="px-6 py-4 border-b border-border flex-shrink-0">
+        <h2 class="font-semibold text-txt">Status</h2>
+        <p class="text-xs text-txt-dim mt-0.5">System health and diagnostics</p>
+      </div>
+      <div id="status-content" class="flex-1 overflow-y-auto px-6 py-6">
+        <div class="text-center text-txt-muted text-sm py-12">Loading status...</div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    const App = {
+      token: localStorage.getItem('zc_token'),
+      panel: 'chat',
+      sending: false,
+      models: [],
+      modelDropdownVisible: false,
+
+      // ── API helper ─────────────────────────────────────
+      async api(method, path, body) {
+        const headers = { 'Content-Type': 'application/json' };
+        if (this.token) headers['Authorization'] = 'Bearer ' + this.token;
+        const opts = { method, headers };
+        if (body) opts.body = JSON.stringify(body);
+        const res = await fetch(path, opts);
+        if (res.status === 401) {
+          this.token = null;
+          localStorage.removeItem('zc_token');
+          this.showPairing();
+          throw new Error('Unauthorized');
+        }
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+        return data;
+      },
+
+      // ── Pairing ────────────────────────────────────────
+      showPairing() {
+        document.getElementById('pairing-modal').classList.remove('hidden');
+        document.getElementById('pairing-code').value = '';
+        document.getElementById('pairing-error').classList.add('hidden');
+        setTimeout(() => document.getElementById('pairing-code').focus(), 100);
+      },
+
+      async pair() {
+        const code = document.getElementById('pairing-code').value.trim();
+        const errEl = document.getElementById('pairing-error');
+        const btn = document.getElementById('pairing-submit');
+        if (code.length !== 6) {
+          errEl.textContent = 'Enter a 6-digit code';
+          errEl.classList.remove('hidden');
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = 'Connecting...';
+        try {
+          const res = await fetch('/pair', {
+            method: 'POST',
+            headers: { 'X-Pairing-Code': code },
+          });
+          const data = await res.json();
+          if (data.token) {
+            this.token = data.token;
+            localStorage.setItem('zc_token', data.token);
+            document.getElementById('pairing-modal').classList.add('hidden');
+            this.onConnected();
+          } else {
+            errEl.textContent = data.error || 'Invalid code';
+            errEl.classList.remove('hidden');
+          }
+        } catch (e) {
+          errEl.textContent = 'Connection failed';
+          errEl.classList.remove('hidden');
+        }
+        btn.disabled = false;
+        btn.textContent = 'Connect';
+      },
+
+      // ── Init ───────────────────────────────────────────
+      async init() {
+        // Try existing token
+        if (this.token) {
+          try {
+            await this.api('GET', '/api/status');
+            this.onConnected();
+            return;
+          } catch (e) { /* token invalid, show pairing */ }
+        }
+        // Check if pairing is even required
+        try {
+          const health = await fetch('/health').then(r => r.json());
+          if (!health.paired && health.runtime) {
+            // Try without token (pairing might be disabled)
+            try {
+              await fetch('/api/status', {
+                headers: this.token ? { 'Authorization': 'Bearer ' + this.token } : {}
+              }).then(r => {
+                if (r.ok) { this.onConnected(); return; }
+                throw new Error('need pairing');
+              });
+              return;
+            } catch(e) { /* need pairing */ }
+          }
+        } catch(e) { /* server not reachable */ }
+        this.showPairing();
+      },
+
+      onConnected() {
+        const el = document.getElementById('conn-status');
+        el.innerHTML = '<span class="status-dot status-ok"></span><span>connected</span>';
+        this.loadSettings();
+      },
+
+      // ── Navigation ─────────────────────────────────────
+      navigate(panel) {
+        this.panel = panel;
+        document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+        document.getElementById('panel-' + panel).classList.remove('hidden');
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        document.querySelector(`[data-panel="${panel}"]`).classList.add('active');
+        if (panel === 'memory') this.loadMemory();
+        if (panel === 'tools') this.loadTools();
+        if (panel === 'status') this.loadStatus();
+        if (panel === 'settings') this.loadSettings();
+      },
+
+      // ── Chat ───────────────────────────────────────────
+      handleChatKey(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          this.sendChat();
+        }
+      },
+
+      async sendChat() {
+        const input = document.getElementById('chat-input');
+        const msg = input.value.trim();
+        if (!msg || this.sending) return;
+
+        this.sending = true;
+        input.value = '';
+        document.getElementById('chat-send').disabled = true;
+
+        const container = document.getElementById('chat-messages');
+        // Clear welcome message on first send
+        if (container.querySelector('.text-center')) {
+          container.innerHTML = '';
+        }
+
+        // User message
+        container.insertAdjacentHTML('beforeend', this.renderUserMsg(msg));
+
+        // Thinking indicator
+        const thinkingId = 'thinking-' + Date.now();
+        container.insertAdjacentHTML('beforeend',
+          `<div id="${thinkingId}" class="flex gap-3 fade-in"><div class="w-7 h-7 rounded-md bg-accent/10 flex items-center justify-center flex-shrink-0 mt-0.5"><span class="text-accent font-mono text-xs font-bold">ZC</span></div><div class="flex gap-1 items-center py-2"><div class="thinking-dot w-2 h-2 rounded-full bg-accent"></div><div class="thinking-dot w-2 h-2 rounded-full bg-accent"></div><div class="thinking-dot w-2 h-2 rounded-full bg-accent"></div></div></div>`
+        );
+        container.scrollTop = container.scrollHeight;
+
+        try {
+          const data = await this.api('POST', '/api/chat', { message: msg });
+          document.getElementById(thinkingId).remove();
+          container.insertAdjacentHTML('beforeend', this.renderAssistantMsg(data));
+        } catch (e) {
+          document.getElementById(thinkingId).remove();
+          container.insertAdjacentHTML('beforeend',
+            `<div class="flex gap-3 fade-in"><div class="w-7 h-7 rounded-md bg-red-500/10 flex items-center justify-center flex-shrink-0 mt-0.5"><span class="text-red-400 font-mono text-xs font-bold">!</span></div><div class="text-sm text-red-400">${this.esc(e.message)}</div></div>`
+          );
+        }
+
+        container.scrollTop = container.scrollHeight;
+        this.sending = false;
+        document.getElementById('chat-send').disabled = false;
+        input.focus();
+      },
+
+      renderUserMsg(msg) {
+        return `<div class="flex gap-3 justify-end fade-in"><div class="bg-accent/10 border border-accent/20 rounded-lg px-4 py-2.5 max-w-[75%]"><p class="text-sm text-txt whitespace-pre-wrap">${this.esc(msg)}</p></div></div>`;
+      },
+
+      renderAssistantMsg(data) {
+        let toolHtml = '';
+        if (data.details && data.details.tool_invocations && data.details.tool_invocations.length > 0) {
+          const tools = data.details.tool_invocations.map(t => {
+            const dot = t.success ? 'status-ok' : 'status-error';
+            return `<div class="bg-bg rounded-md p-3 border border-border">
+              <div class="flex items-center gap-2 mb-1.5">
+                <span class="status-dot ${dot}"></span>
+                <span class="font-mono text-xs font-medium text-txt">${this.esc(t.name)}</span>
+              </div>
+              ${t.arguments ? `<div class="text-xs text-txt-muted font-mono mb-1 break-all"><span class="text-txt-dim">args:</span> ${this.esc(t.arguments)}</div>` : ''}
+              ${t.result_preview ? `<div class="text-xs text-txt-dim font-mono break-all whitespace-pre-wrap max-h-24 overflow-y-auto">${this.esc(t.result_preview)}</div>` : ''}
+            </div>`;
+          }).join('');
+          toolHtml = `<details class="mt-2"><summary class="flex items-center gap-1.5 text-xs text-txt-dim hover:text-txt-muted cursor-pointer"><svg class="w-3 h-3 chevron transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>${data.details.tool_invocations.length} tool call${data.details.tool_invocations.length > 1 ? 's' : ''}</summary><div class="mt-2 space-y-2">${tools}</div></details>`;
+        }
+
+        let metaHtml = '';
+        const parts = [];
+        if (data.model) parts.push(data.model.split('/').pop());
+        if (data.iterations) parts.push(data.iterations + ' iter');
+        if (data.details && data.details.usage) parts.push(data.details.usage.total_tokens + ' tok');
+        if (parts.length) {
+          metaHtml = `<div class="mt-2 text-xs text-txt-muted font-mono">${parts.join(' \u00b7 ')}</div>`;
+        }
+
+        return `<div class="flex gap-3 fade-in">
+          <div class="w-7 h-7 rounded-md bg-accent/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <span class="text-accent font-mono text-xs font-bold">ZC</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm text-txt whitespace-pre-wrap">${this.esc(data.response)}</div>
+            ${toolHtml}
+            ${metaHtml}
+          </div>
+        </div>`;
+      },
+
+      // ── Settings ───────────────────────────────────────
+      async loadSettings() {
+        try {
+          const data = await this.api('GET', '/api/config');
+          document.getElementById('settings-model').value = data.model || '';
+          document.getElementById('settings-temperature').value = data.temperature || 0.7;
+          document.getElementById('settings-temp-val').textContent = data.temperature || 0.7;
+          document.getElementById('settings-max-iterations').value = data.max_iterations || 10;
+          document.getElementById('settings-max-tokens').value = data.max_tokens || 4096;
+          // Load providers dropdown then select current
+          await this.loadProviders(data.provider);
+          // Load models for current provider
+          this.loadModels();
+        } catch (e) { /* ignore on init */ }
+      },
+
+      async loadProviders(currentProvider) {
+        const select = document.getElementById('settings-provider');
+        try {
+          const data = await this.api('GET', '/api/providers');
+          const providers = data.providers || [];
+          select.innerHTML = providers.map(p =>
+            `<option value="${this.esc(p)}" ${p === currentProvider ? 'selected' : ''}>${this.esc(p)}</option>`
+          ).join('');
+        } catch (e) {
+          select.innerHTML = currentProvider
+            ? `<option value="${this.esc(currentProvider)}" selected>${this.esc(currentProvider)}</option>`
+            : '<option value="">-</option>';
+        }
+      },
+
+      async loadModels() {
+        const loadingEl = document.getElementById('model-loading');
+        loadingEl.classList.remove('hidden');
+        try {
+          const data = await this.api('GET', '/api/models');
+          this.models = (data.models || []).map(m => m.id || m);
+        } catch (e) {
+          this.models = [];
+        }
+        loadingEl.classList.add('hidden');
+        this.renderModelDropdown();
+      },
+
+      renderModelDropdown(filter) {
+        const dd = document.getElementById('model-dropdown');
+        const query = (filter || '').toLowerCase();
+        const filtered = query
+          ? this.models.filter(m => m.toLowerCase().includes(query))
+          : this.models;
+        if (filtered.length === 0) {
+          dd.innerHTML = '<div class="px-4 py-2.5 text-xs text-txt-muted">No models found</div>';
+          return;
+        }
+        dd.innerHTML = filtered.slice(0, 100).map(m =>
+          `<div class="px-4 py-2 text-sm font-mono text-txt hover:bg-accent/10 cursor-pointer transition truncate" onclick="App.selectModel('${this.esc(m)}')" title="${this.esc(m)}">${this.esc(m)}</div>`
+        ).join('');
+      },
+
+      filterModels() {
+        const query = document.getElementById('settings-model').value;
+        this.renderModelDropdown(query);
+        this.showModelDropdown();
+      },
+
+      showModelDropdown() {
+        if (this.models.length === 0) return;
+        const dd = document.getElementById('model-dropdown');
+        dd.classList.remove('hidden');
+        this.modelDropdownVisible = true;
+      },
+
+      hideModelDropdown() {
+        const dd = document.getElementById('model-dropdown');
+        dd.classList.add('hidden');
+        this.modelDropdownVisible = false;
+      },
+
+      selectModel(id) {
+        document.getElementById('settings-model').value = id;
+        this.hideModelDropdown();
+      },
+
+      handleModelKey(e) {
+        if (e.key === 'Escape') {
+          this.hideModelDropdown();
+        }
+      },
+
+      async onProviderChange() {
+        const fb = document.getElementById('settings-feedback');
+        const newProvider = document.getElementById('settings-provider').value;
+        try {
+          await this.api('POST', '/api/config', { provider: newProvider });
+          fb.textContent = 'Provider switched!';
+          fb.className = 'ml-3 text-sm text-green-400';
+          fb.classList.remove('hidden');
+          setTimeout(() => fb.classList.add('hidden'), 2000);
+          // Clear model and refresh models list
+          document.getElementById('settings-model').value = '';
+          this.loadModels();
+        } catch (e) {
+          fb.textContent = e.message;
+          fb.className = 'ml-3 text-sm text-red-400';
+          fb.classList.remove('hidden');
+        }
+      },
+
+      async saveSettings() {
+        const fb = document.getElementById('settings-feedback');
+        try {
+          const body = {
+            model: document.getElementById('settings-model').value,
+            temperature: parseFloat(document.getElementById('settings-temperature').value),
+            max_iterations: parseInt(document.getElementById('settings-max-iterations').value),
+            max_tokens: parseInt(document.getElementById('settings-max-tokens').value),
+          };
+          await this.api('POST', '/api/config', body);
+          fb.textContent = 'Saved!';
+          fb.className = 'ml-3 text-sm text-green-400';
+          fb.classList.remove('hidden');
+          setTimeout(() => fb.classList.add('hidden'), 2000);
+        } catch (e) {
+          fb.textContent = e.message;
+          fb.className = 'ml-3 text-sm text-red-400';
+          fb.classList.remove('hidden');
+        }
+      },
+
+      // ── Memory ─────────────────────────────────────────
+      async loadMemory() {
+        const container = document.getElementById('memory-list');
+        const q = document.getElementById('memory-search').value.trim();
+        const cat = document.getElementById('memory-category').value;
+        try {
+          let url = '/api/memory?limit=50';
+          if (q) url += '&q=' + encodeURIComponent(q);
+          if (cat) url += '&category=' + encodeURIComponent(cat);
+          const data = await this.api('GET', url);
+          if (!data.memories || data.memories.length === 0) {
+            container.innerHTML = '<div class="text-center text-txt-muted text-sm py-12">No memories found</div>';
+            return;
+          }
+          container.innerHTML = data.memories.map(m => `
+            <div class="bg-surface border border-border rounded-lg p-4 group hover:border-border/80 transition fade-in">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2 mb-1.5">
+                    <span class="font-mono text-sm font-medium text-txt">${this.esc(m.key)}</span>
+                    <span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono">${this.esc(m.category)}</span>
+                  </div>
+                  <p class="text-sm text-txt-dim line-clamp-2">${this.esc(m.content)}</p>
+                  <p class="text-xs text-txt-muted mt-1.5 font-mono">${m.timestamp || ''}</p>
+                </div>
+                <button onclick="App.deleteMemory('${this.esc(m.key)}')"
+                  class="opacity-0 group-hover:opacity-100 text-red-400/60 hover:text-red-400 transition p-1 rounded" title="Delete">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                </button>
+              </div>
+            </div>`).join('');
+        } catch (e) {
+          container.innerHTML = `<div class="text-center text-red-400 text-sm py-12">${this.esc(e.message)}</div>`;
+        }
+      },
+
+      async deleteMemory(key) {
+        if (!confirm('Delete memory "' + key + '"?')) return;
+        try {
+          await this.api('DELETE', '/api/memory/' + encodeURIComponent(key));
+          this.loadMemory();
+        } catch (e) {
+          alert('Failed to delete: ' + e.message);
+        }
+      },
+
+      // ── Tools ──────────────────────────────────────────
+      async loadTools() {
+        const container = document.getElementById('tools-list');
+        try {
+          const data = await this.api('GET', '/api/tools');
+          if (!data.tools || data.tools.length === 0) {
+            container.innerHTML = '<div class="text-center text-txt-muted text-sm py-12">No tools available</div>';
+            return;
+          }
+          container.innerHTML = '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' + data.tools.map(t => `
+            <div class="bg-surface border border-border rounded-lg p-4">
+              <div class="flex items-center gap-2 mb-2">
+                <div class="w-8 h-8 rounded-md bg-accent/10 flex items-center justify-center">
+                  <svg class="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>
+                </div>
+                <span class="font-mono text-sm font-medium text-txt">${this.esc(t.name)}</span>
+              </div>
+              <p class="text-sm text-txt-dim mb-3">${this.esc(t.description)}</p>
+              <details>
+                <summary class="flex items-center gap-1.5 text-xs text-txt-muted hover:text-txt-dim cursor-pointer">
+                  <svg class="w-3 h-3 chevron transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                  Parameters
+                </summary>
+                <pre class="mt-2 text-xs font-mono text-txt-muted bg-bg rounded-md p-3 overflow-x-auto">${this.esc(JSON.stringify(t.parameters, null, 2))}</pre>
+              </details>
+            </div>`).join('') + '</div>';
+        } catch (e) {
+          container.innerHTML = `<div class="text-center text-red-400 text-sm py-12">${this.esc(e.message)}</div>`;
+        }
+      },
+
+      // ── Status ─────────────────────────────────────────
+      async loadStatus() {
+        const container = document.getElementById('status-content');
+        try {
+          const data = await this.api('GET', '/api/status');
+          const uptime = this.formatUptime(data.uptime_seconds || 0);
+          let componentsHtml = '';
+          if (data.components) {
+            componentsHtml = '<div class="mt-6"><h3 class="text-sm font-medium text-txt-dim mb-3">Components</h3><div class="space-y-2">' +
+              Object.entries(data.components).map(([name, c]) => {
+                const dot = c.status === 'ok' ? 'status-ok' : c.status === 'error' ? 'status-error' : 'status-warn';
+                return `<div class="bg-surface border border-border rounded-lg px-4 py-3 flex items-center justify-between">
+                  <div class="flex items-center gap-2.5">
+                    <span class="status-dot ${dot}"></span>
+                    <span class="font-mono text-sm text-txt">${this.esc(name)}</span>
+                  </div>
+                  <div class="flex items-center gap-4 text-xs text-txt-muted font-mono">
+                    <span>${this.esc(c.status)}</span>
+                    ${c.restart_count > 0 ? `<span class="text-amber-400">${c.restart_count} restarts</span>` : ''}
+                  </div>
+                </div>`;
+              }).join('') + '</div></div>';
+          }
+
+          container.innerHTML = `
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div class="bg-surface border border-border rounded-lg p-4">
+                <p class="text-xs text-txt-muted mb-1">Uptime</p>
+                <p class="text-lg font-mono font-medium text-txt">${uptime}</p>
+              </div>
+              <div class="bg-surface border border-border rounded-lg p-4">
+                <p class="text-xs text-txt-muted mb-1">Provider</p>
+                <p class="text-lg font-mono font-medium text-txt">${this.esc(data.provider || '-')}</p>
+              </div>
+              <div class="bg-surface border border-border rounded-lg p-4">
+                <p class="text-xs text-txt-muted mb-1">Model</p>
+                <p class="text-sm font-mono font-medium text-txt truncate" title="${this.esc(data.model || '')}">${this.esc((data.model || '-').split('/').pop())}</p>
+              </div>
+              <div class="bg-surface border border-border rounded-lg p-4">
+                <p class="text-xs text-txt-muted mb-1">Memories</p>
+                <p class="text-lg font-mono font-medium text-txt">${data.memory_count || 0}</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+              <div class="bg-surface border border-border rounded-lg p-4">
+                <p class="text-xs text-txt-muted mb-1">PID</p>
+                <p class="text-sm font-mono text-txt">${data.pid || '-'}</p>
+              </div>
+              <div class="bg-surface border border-border rounded-lg p-4">
+                <p class="text-xs text-txt-muted mb-1">Memory Backend</p>
+                <p class="text-sm font-mono text-txt">${this.esc(data.memory_backend || '-')}</p>
+              </div>
+              <div class="bg-surface border border-border rounded-lg p-4">
+                <p class="text-xs text-txt-muted mb-1">Version</p>
+                <p class="text-sm font-mono text-txt">${this.esc(data.version || '-')}</p>
+              </div>
+              <div class="bg-surface border border-border rounded-lg p-4">
+                <p class="text-xs text-txt-muted mb-1">Status</p>
+                <div class="flex items-center gap-2">
+                  <span class="status-dot ${data.status === 'ok' ? 'status-ok' : 'status-error'}"></span>
+                  <span class="text-sm font-mono text-txt">${this.esc(data.status || 'unknown')}</span>
+                </div>
+              </div>
+            </div>
+            ${componentsHtml}`;
+        } catch (e) {
+          container.innerHTML = `<div class="text-center text-red-400 text-sm py-12">${this.esc(e.message)}</div>`;
+        }
+      },
+
+      formatUptime(secs) {
+        if (secs < 60) return secs + 's';
+        if (secs < 3600) return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        return h + 'h ' + m + 'm';
+      },
+
+      // ── Util ───────────────────────────────────────────
+      esc(s) {
+        if (!s) return '';
+        const el = document.createElement('span');
+        el.textContent = String(s);
+        return el.innerHTML;
+      },
+    };
+
+    // Auto-pair on code input
+    document.getElementById('pairing-code').addEventListener('input', function() {
+      if (this.value.length === 6) App.pair();
+    });
+    document.getElementById('pairing-code').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') App.pair();
+    });
+
+    // Close model dropdown on click outside
+    document.addEventListener('click', function(e) {
+      const combo = document.getElementById('model-combo');
+      if (combo && !combo.contains(e.target)) {
+        App.hideModelDropdown();
+      }
+    });
+
+    // Init
+    App.init();
+  </script>
+</body>
+</html>

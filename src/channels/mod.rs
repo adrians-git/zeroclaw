@@ -20,6 +20,7 @@ pub use telegram::TelegramChannel;
 pub use traits::Channel;
 pub use whatsapp::WhatsAppChannel;
 
+use crate::agent::tool_loop::{run_tool_loop, ToolLoopConfig};
 use crate::config::Config;
 use crate::identity;
 use crate::memory::{self, Memory};
@@ -85,7 +86,7 @@ fn spawn_supervised_listener(
                 }
                 Err(e) => {
                     tracing::error!("Channel {} error: {e}; restarting", ch.name());
-                    crate::health::mark_component_error(&component, e.to_string());
+                    crate::health::mark_component_error(&component, &e.to_string());
                 }
             }
 
@@ -518,6 +519,22 @@ pub async fn start_channels(config: Config) -> Result<()> {
         &config.workspace_dir,
         config.api_key.as_deref(),
     )?);
+
+    // ── Security + Tools + Tool Loop Config ─────────────────────
+    let security = Arc::new(SecurityPolicy::from_config(
+        &config.autonomy,
+        &config.workspace_dir,
+    ));
+    let composio_key = if config.composio.enabled {
+        config.composio.api_key.as_deref()
+    } else {
+        None
+    };
+    let tool_registry = tools::all_tools(&security, mem.clone(), composio_key, &config.browser);
+    let tool_loop_config = ToolLoopConfig {
+        max_iterations: config.agent.max_tool_iterations,
+        max_tokens: config.agent.max_tokens,
+    };
 
     // Build system prompt from workspace identity files + skills
     let workspace = config.workspace_dir.clone();
