@@ -17,7 +17,7 @@
 Fast, small, and fully autonomous AI assistant infrastructure — deploy anywhere, swap anything.
 
 ```
-~3.4MB binary · <10ms startup · 1,017 tests · 22+ providers · 8 traits · Pluggable everything
+~3.4MB binary · <10ms startup · 1,351 tests · 22+ providers · 8 traits · Embedded web UI · Pluggable everything
 ```
 
 ### ✨ Features
@@ -65,7 +65,7 @@ ls -lh target/release/zeroclaw
 ## Quick Start
 
 ```bash
-git clone https://github.com/theonlyhennygod/zeroclaw.git
+git clone https://github.com/adrians-git/zeroclaw.git
 cd zeroclaw
 cargo build --release
 cargo install --path . --force
@@ -386,6 +386,7 @@ See [aieos.org](https://aieos.org) for the full schema and live examples.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
+| `/` | GET | None | Embedded web UI |
 | `/health` | GET | None | Health check (always public, no secrets leaked) |
 | `/pair` | POST | `X-Pairing-Code` header | Exchange one-time code for bearer token |
 | `/webhook` | POST | `Authorization: Bearer <token>` | Send message: `{"message": "your prompt"}` |
@@ -415,7 +416,7 @@ See [aieos.org](https://aieos.org) for the full schema and live examples.
 ```bash
 cargo build              # Dev build
 cargo build --release    # Release build (~3.4MB)
-cargo test               # 1,017 tests
+cargo test               # 1,351 tests
 cargo clippy             # Lint (0 warnings)
 cargo fmt                # Format
 
