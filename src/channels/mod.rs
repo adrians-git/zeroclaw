@@ -20,7 +20,7 @@ pub use telegram::TelegramChannel;
 pub use traits::Channel;
 pub use whatsapp::WhatsAppChannel;
 
-use crate::agent::tool_loop::ToolLoopConfig;
+use crate::agent::tool_loop::{run_tool_loop, ToolLoopConfig};
 use crate::config::Config;
 use crate::identity;
 use crate::memory::{self, Memory};
@@ -532,8 +532,8 @@ pub async fn start_channels(config: Config) -> Result<()> {
     } else {
         None
     };
-    let _tool_registry = tools::all_tools(&security, mem.clone(), composio_key, &config.browser, &config.agents, config.api_key.as_deref());
-    let _tool_loop_config = ToolLoopConfig {
+    let tool_registry = tools::all_tools(&security, mem.clone(), composio_key, &config.browser, &config.agents, config.api_key.as_deref());
+    let tool_loop_config = ToolLoopConfig {
         max_iterations: config.agent.max_tool_iterations,
         max_tokens: config.agent.max_tokens,
     };
@@ -757,7 +757,21 @@ pub async fn start_channels(config: Config) -> Result<()> {
 
         let llm_result = tokio::time::timeout(
             Duration::from_secs(CHANNEL_MESSAGE_TIMEOUT_SECS),
-            provider.chat_with_system(Some(&system_prompt), &enriched_message, &model, temperature),
+            async {
+                run_tool_loop(
+                    provider.as_ref(),
+                    Some(&system_prompt),
+                    &enriched_message,
+                    &tool_registry,
+                    security.as_ref(),
+                    &model,
+                    temperature,
+                    &tool_loop_config,
+                    None,
+                )
+                .await
+                .map(|r| r.final_content)
+            },
         )
         .await;
 

@@ -1,4 +1,5 @@
 
+use crate::agent::tool_loop::{run_tool_loop, ToolLoopConfig};
 use crate::config::Config;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::observability::{self, Observer, ObserverEvent};
@@ -481,7 +482,7 @@ pub async fn run(
              prompt and returns its response.",
         ));
     }
-    let mut system_prompt = crate::channels::build_system_prompt(
+    let system_prompt = crate::channels::build_system_prompt(
         &config.workspace_dir,
         model_name,
         &tool_descs,
@@ -489,8 +490,13 @@ pub async fn run(
         Some(&config.identity),
     );
 
-    // Append structured tool-use instructions with schemas
-    system_prompt.push_str(&build_tool_instructions(&tools_registry));
+    // Tool-calling is handled natively by the provider via run_tool_loop,
+    // so we no longer inject XML tool schemas into the system prompt.
+
+    let tool_loop_config = ToolLoopConfig {
+        max_iterations: config.agent.max_tool_iterations,
+        max_tokens: config.agent.max_tokens,
+    };
 
     // ── Execute ──────────────────────────────────────────────────
     let start = Instant::now();
@@ -512,20 +518,19 @@ pub async fn run(
             format!("{context}{msg}")
         };
 
-        let mut history = vec![
-            ChatMessage::system(&system_prompt),
-            ChatMessage::user(&enriched),
-        ];
-
-        let response = agent_turn(
+        let result = run_tool_loop(
             provider.as_ref(),
-            &mut history,
+            Some(&system_prompt),
+            &enriched,
             &tools_registry,
-            observer.as_ref(),
+            security.as_ref(),
             model_name,
             temperature,
+            &tool_loop_config,
+            Some(observer.as_ref()),
         )
         .await?;
+        let response = result.final_content;
         println!("{response}");
 
         // Auto-save assistant response to daily log
@@ -568,25 +573,43 @@ pub async fn run(
                 format!("{context}{}", msg.content)
             };
 
-            history.push(ChatMessage::user(&enriched));
+            // Build the full message with history context for multi-turn
+            let full_message = if history.len() > 1 {
+                // Include prior conversation context
+                let mut ctx = String::new();
+                for msg in &history[1..] {
+                    // Skip system prompt (index 0), include user/assistant turns
+                    let _ = writeln!(ctx, "[{}]: {}", msg.role, msg.content.as_deref().unwrap_or(""));
+                }
+                format!("{ctx}\n[user]: {enriched}")
+            } else {
+                enriched.clone()
+            };
 
-            let response = match agent_turn(
+            let response = match run_tool_loop(
                 provider.as_ref(),
-                &mut history,
+                Some(&system_prompt),
+                &full_message,
                 &tools_registry,
-                observer.as_ref(),
+                security.as_ref(),
                 model_name,
                 temperature,
+                &tool_loop_config,
+                Some(observer.as_ref()),
             )
             .await
             {
-                Ok(resp) => resp,
+                Ok(result) => result.final_content,
                 Err(e) => {
                     eprintln!("\nError: {e}\n");
                     continue;
                 }
             };
             println!("\n{response}\n");
+
+            // Preserve conversation context for multi-turn
+            history.push(ChatMessage::user(&enriched));
+            history.push(ChatMessage::assistant(&response));
 
             // Prevent unbounded history growth in long interactive sessions
             trim_history(&mut history);
