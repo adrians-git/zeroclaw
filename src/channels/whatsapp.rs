@@ -123,6 +123,7 @@ impl WhatsAppChannel {
                         content,
                         channel: "whatsapp".to_string(),
                         timestamp,
+                        images: vec![],
                     });
                 }
             }

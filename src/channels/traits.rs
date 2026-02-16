@@ -1,5 +1,14 @@
 use async_trait::async_trait;
 
+/// An image attached to a channel message.
+#[derive(Debug, Clone)]
+pub struct ChannelImage {
+    /// Raw image bytes.
+    pub data: Vec<u8>,
+    /// MIME type (e.g. "image/png").
+    pub media_type: String,
+}
+
 /// A message received from or sent to a channel
 #[derive(Debug, Clone)]
 pub struct ChannelMessage {
@@ -8,6 +17,8 @@ pub struct ChannelMessage {
     pub content: String,
     pub channel: String,
     pub timestamp: u64,
+    /// Images attached to this message (e.g. photos sent by the user).
+    pub images: Vec<ChannelImage>,
 }
 
 /// Core channel trait — implement for any messaging platform
@@ -35,6 +46,17 @@ pub trait Channel: Send + Sync {
 
     /// Stop any active typing indicator.
     async fn stop_typing(&self, _recipient: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Send an image through this channel. Default is a no-op.
+    async fn send_image(
+        &self,
+        _data: &[u8],
+        _media_type: &str,
+        _recipient: &str,
+        _caption: Option<&str>,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }

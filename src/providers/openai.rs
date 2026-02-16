@@ -1,5 +1,5 @@
 use crate::providers::traits::{
-    ChatMessage, LlmResponse, ModelInfo, Provider, ToolCallRequest, UsageInfo,
+    ChatMessage, ContentPart, LlmResponse, ModelInfo, Provider, ToolCallRequest, UsageInfo,
 };
 use crate::tools::ToolSpec;
 use async_trait::async_trait;
@@ -37,11 +37,33 @@ fn uses_legacy_max_tokens(model: &str) -> bool {
 struct Message {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<OpenAiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<WireToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+}
+
+/// OpenAI content: either a plain string or an array of content parts (for multimodal).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+enum OpenAiContent {
+    Text(String),
+    Parts(Vec<OpenAiContentPart>),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "type")]
+enum OpenAiContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ImageUrlData },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ImageUrlData {
+    url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -156,12 +178,39 @@ fn convert_tools(tools: &[ToolSpec]) -> Vec<ToolDefinition> {
         .collect()
 }
 
+fn convert_content(
+    content: &Option<crate::providers::traits::MessageContent>,
+) -> Option<OpenAiContent> {
+    match content {
+        Some(crate::providers::traits::MessageContent::Text(s)) => {
+            Some(OpenAiContent::Text(s.clone()))
+        }
+        Some(crate::providers::traits::MessageContent::Parts(parts)) => {
+            let oai_parts: Vec<OpenAiContentPart> = parts
+                .iter()
+                .map(|p| match p {
+                    ContentPart::Text { text } => {
+                        OpenAiContentPart::Text { text: text.clone() }
+                    }
+                    ContentPart::Image { data, media_type } => OpenAiContentPart::ImageUrl {
+                        image_url: ImageUrlData {
+                            url: format!("data:{media_type};base64,{data}"),
+                        },
+                    },
+                })
+                .collect();
+            Some(OpenAiContent::Parts(oai_parts))
+        }
+        None => None,
+    }
+}
+
 fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
     messages
         .iter()
         .map(|m| Message {
             role: m.role.clone(),
-            content: m.content.clone(),
+            content: convert_content(&m.content),
             tool_calls: m.tool_calls.as_ref().map(|calls| {
                 calls
                     .iter()
@@ -235,7 +284,7 @@ impl Provider for OpenAiProvider {
         if let Some(sys) = system_prompt {
             messages.push(Message {
                 role: "system".to_string(),
-                content: Some(sys.to_string()),
+                content: Some(OpenAiContent::Text(sys.to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -243,7 +292,7 @@ impl Provider for OpenAiProvider {
 
         messages.push(Message {
             role: "user".to_string(),
-            content: Some(message.to_string()),
+            content: Some(OpenAiContent::Text(message.to_string())),
             tool_calls: None,
             tool_call_id: None,
         });
@@ -293,7 +342,7 @@ impl Provider for OpenAiProvider {
         if let Some(sys) = system_prompt {
             wire_messages.push(Message {
                 role: "system".to_string(),
-                content: Some(sys.to_string()),
+                content: Some(OpenAiContent::Text(sys.to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -433,13 +482,13 @@ mod tests {
             messages: vec![
                 Message {
                     role: "system".to_string(),
-                    content: Some("You are ZeroClaw".to_string()),
+                    content: Some(OpenAiContent::Text("You are ZeroClaw".to_string())),
                     tool_calls: None,
                     tool_call_id: None,
                 },
                 Message {
                     role: "user".to_string(),
-                    content: Some("hello".to_string()),
+                    content: Some(OpenAiContent::Text("hello".to_string())),
                     tool_calls: None,
                     tool_call_id: None,
                 },
@@ -461,7 +510,7 @@ mod tests {
             model: "gpt-4o".to_string(),
             messages: vec![Message {
                 role: "user".to_string(),
-                content: Some("hello".to_string()),
+                content: Some(OpenAiContent::Text("hello".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             }],

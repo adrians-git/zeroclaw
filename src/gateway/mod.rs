@@ -955,6 +955,7 @@ mod tests {
             content: "hello".into(),
             channel: "whatsapp".into(),
             timestamp: 1,
+            images: vec![],
         };
 
         let key = whatsapp_memory_key(&msg);

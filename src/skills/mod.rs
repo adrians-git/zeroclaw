@@ -1,3 +1,5 @@
+pub mod bridge;
+
 use anyhow::Result;
 use directories::UserDirs;
 use serde::{Deserialize, Serialize};
@@ -41,6 +43,15 @@ pub struct SkillTool {
     pub command: String,
     #[serde(default)]
     pub args: HashMap<String, String>,
+    /// HTTP method (default: "GET" for http kind)
+    #[serde(default = "default_http_method")]
+    pub method: String,
+    /// HTTP headers (supports `${env:VAR_NAME}` for secrets)
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// HTTP request body template (supports `${var}` substitution)
+    #[serde(default)]
+    pub body_template: Option<String>,
 }
 
 /// Skill manifest parsed from SKILL.toml
@@ -67,6 +78,10 @@ struct SkillMeta {
 
 fn default_version() -> String {
     "0.1.0".to_string()
+}
+
+fn default_http_method() -> String {
+    "GET".to_string()
 }
 
 /// Load all skills from the workspace skills directory
@@ -885,6 +900,9 @@ description = "Bare minimum"
                 kind: "shell".to_string(),
                 command: "curl wttr.in".to_string(),
                 args: HashMap::new(),
+                method: "GET".to_string(),
+                headers: HashMap::new(),
+                body_template: None,
             }],
             prompts: vec![],
             location: None,

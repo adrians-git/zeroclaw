@@ -532,15 +532,15 @@ pub async fn start_channels(config: Config) -> Result<()> {
     } else {
         None
     };
-    let tool_registry = tools::all_tools(&security, mem.clone(), composio_key, &config.browser, &config.agents, config.api_key.as_deref());
+    let workspace = config.workspace_dir.clone();
+    let skills = crate::skills::load_skills(&workspace);
+    let tool_registry = tools::all_tools(&security, mem.clone(), composio_key, &config.browser, &config.agents, config.api_key.as_deref(), &skills);
     let tool_loop_config = ToolLoopConfig {
         max_iterations: config.agent.max_tool_iterations,
         max_tokens: config.agent.max_tokens,
     };
 
     // Build system prompt from workspace identity files + skills
-    let workspace = config.workspace_dir.clone();
-    let skills = crate::skills::load_skills(&workspace);
 
     // Collect tool descriptions for the prompt
     let mut tool_descs: Vec<(&str, &str)> = vec![
@@ -757,21 +757,17 @@ pub async fn start_channels(config: Config) -> Result<()> {
 
         let llm_result = tokio::time::timeout(
             Duration::from_secs(CHANNEL_MESSAGE_TIMEOUT_SECS),
-            async {
-                run_tool_loop(
-                    provider.as_ref(),
-                    Some(&system_prompt),
-                    &enriched_message,
-                    &tool_registry,
-                    security.as_ref(),
-                    &model,
-                    temperature,
-                    &tool_loop_config,
-                    None,
-                )
-                .await
-                .map(|r| r.final_content)
-            },
+            run_tool_loop(
+                provider.as_ref(),
+                Some(&system_prompt),
+                &enriched_message,
+                &tool_registry,
+                security.as_ref(),
+                &model,
+                temperature,
+                &tool_loop_config,
+                None,
+            ),
         )
         .await;
 
@@ -783,14 +779,25 @@ pub async fn start_channels(config: Config) -> Result<()> {
         }
 
         match llm_result {
-            Ok(Ok(response)) => {
+            Ok(Ok(result)) => {
+                let response = &result.final_content;
                 println!(
                     "  🤖 Reply ({}ms): {}",
                     started_at.elapsed().as_millis(),
-                    truncate_with_ellipsis(&response, 80)
+                    truncate_with_ellipsis(response, 80)
                 );
                 if let Some(ch) = target_channel {
-                    if let Err(e) = ch.send(&response, &msg.sender).await {
+                    // Send images first
+                    for img in &result.images {
+                        if let Err(e) = ch
+                            .send_image(&img.data, &img.media_type, &msg.sender, None)
+                            .await
+                        {
+                            tracing::warn!("Failed to send image on {}: {e}", ch.name());
+                        }
+                    }
+                    // Then send text response
+                    if let Err(e) = ch.send(response, &msg.sender).await {
                         eprintln!("  ❌ Failed to reply on {}: {e}", ch.name());
                     }
                 }
@@ -1071,6 +1078,7 @@ mod tests {
             content: "hello".into(),
             channel: "slack".into(),
             timestamp: 1,
+            images: vec![],
         };
 
         assert_eq!(conversation_memory_key(&msg), "slack_U123_msg_abc123");
@@ -1084,6 +1092,7 @@ mod tests {
             content: "first".into(),
             channel: "slack".into(),
             timestamp: 1,
+            images: vec![],
         };
         let msg2 = traits::ChannelMessage {
             id: "msg_2".into(),
@@ -1091,6 +1100,7 @@ mod tests {
             content: "second".into(),
             channel: "slack".into(),
             timestamp: 2,
+            images: vec![],
         };
 
         assert_ne!(
@@ -1110,6 +1120,7 @@ mod tests {
             content: "I'm Paul".into(),
             channel: "slack".into(),
             timestamp: 1,
+            images: vec![],
         };
         let msg2 = traits::ChannelMessage {
             id: "msg_2".into(),
@@ -1117,6 +1128,7 @@ mod tests {
             content: "I'm 45".into(),
             channel: "slack".into(),
             timestamp: 2,
+            images: vec![],
         };
 
         mem.store(

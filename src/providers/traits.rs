@@ -1,6 +1,52 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+// ── Multimodal content types ─────────────────────────────────────
+
+/// A single part of a multimodal message (text or image).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image { data: String, media_type: String },
+}
+
+/// Message content: either a plain text string or a list of multimodal parts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+impl MessageContent {
+    /// Extract text content. For `Text`, returns the string directly.
+    /// For `Parts`, concatenates all text parts.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            MessageContent::Text(s) => Some(s),
+            MessageContent::Parts(_) => None,
+        }
+    }
+
+    /// Extract all text from this content (concatenating text parts).
+    pub fn text_concat(&self) -> String {
+        match self {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+        }
+    }
+}
+
 // ── Shared message types for tool calling ────────────────────────
 
 /// A message in the conversation history (user, assistant, tool).
@@ -8,7 +54,7 @@ use serde::{Deserialize, Serialize};
 pub struct ChatMessage {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<MessageContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallRequest>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -19,7 +65,7 @@ impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: "system".into(),
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
         }
@@ -28,7 +74,7 @@ impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".into(),
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
         }
@@ -37,10 +83,30 @@ impl ChatMessage {
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".into(),
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
         }
+    }
+
+    /// Create a multimodal user message from content parts.
+    pub fn user_multimodal(parts: Vec<ContentPart>) -> Self {
+        Self {
+            role: "user".into(),
+            content: Some(MessageContent::Parts(parts)),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// Get the text content of this message (returns None for multimodal parts).
+    pub fn text_content(&self) -> Option<&str> {
+        self.content.as_ref().and_then(|c| c.as_text())
+    }
+
+    /// Get text content, concatenating text parts for multimodal messages.
+    pub fn text_content_lossy(&self) -> Option<String> {
+        self.content.as_ref().map(|c| c.text_concat())
     }
 }
 
@@ -162,11 +228,11 @@ pub trait Provider: Send + Sync {
         let system = messages
             .iter()
             .find(|m| m.role == "system")
-            .and_then(|m| m.content.as_deref());
+            .and_then(|m| m.text_content());
         let last_user = messages
             .iter()
             .rfind(|m| m.role == "user")
-            .and_then(|m| m.content.as_deref())
+            .and_then(|m| m.text_content())
             .unwrap_or("");
         self.chat_with_system(system, last_user, model, temperature)
             .await
@@ -188,7 +254,7 @@ pub trait Provider: Send + Sync {
         // Flatten messages into a single string for providers that don't support tools.
         let combined: String = messages
             .iter()
-            .filter_map(|m| m.content.as_deref())
+            .filter_map(|m| m.text_content())
             .collect::<Vec<_>>()
             .join("\n\n");
 
@@ -225,13 +291,41 @@ mod tests {
     fn chat_message_constructors() {
         let sys = ChatMessage::system("Be helpful");
         assert_eq!(sys.role, "system");
-        assert_eq!(sys.content.as_deref(), Some("Be helpful"));
+        assert_eq!(sys.text_content(), Some("Be helpful"));
 
         let user = ChatMessage::user("Hello");
         assert_eq!(user.role, "user");
 
         let asst = ChatMessage::assistant("Hi there");
         assert_eq!(asst.role, "assistant");
+    }
+
+    #[test]
+    fn message_content_text() {
+        let mc = MessageContent::Text("hello".to_string());
+        assert_eq!(mc.as_text(), Some("hello"));
+        assert_eq!(mc.text_concat(), "hello");
+    }
+
+    #[test]
+    fn message_content_parts() {
+        let mc = MessageContent::Parts(vec![
+            ContentPart::Text { text: "Look at this: ".to_string() },
+            ContentPart::Image { data: "base64data".to_string(), media_type: "image/png".to_string() },
+        ]);
+        assert!(mc.as_text().is_none());
+        assert_eq!(mc.text_concat(), "Look at this: ");
+    }
+
+    #[test]
+    fn chat_message_user_multimodal() {
+        let msg = ChatMessage::user_multimodal(vec![
+            ContentPart::Text { text: "describe".to_string() },
+            ContentPart::Image { data: "abc".to_string(), media_type: "image/png".to_string() },
+        ]);
+        assert_eq!(msg.role, "user");
+        assert!(msg.text_content().is_none()); // Parts, not plain text
+        assert_eq!(msg.text_content_lossy(), Some("describe".to_string()));
     }
 
     #[test]
@@ -291,6 +385,7 @@ mod tests {
         };
         assert!(resp.tool_calls.is_empty());
         assert_eq!(resp.content.as_deref(), Some("hello"));
+        // LlmResponse.content is still Option<String> — no change needed
     }
 
     #[test]

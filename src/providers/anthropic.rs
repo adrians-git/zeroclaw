@@ -1,5 +1,5 @@
 use crate::providers::traits::{
-    ChatMessage, LlmResponse, ModelInfo, Provider, ToolCallRequest, UsageInfo,
+    ChatMessage, ContentPart, LlmResponse, ModelInfo, Provider, ToolCallRequest, UsageInfo,
 };
 use crate::tools::ToolSpec;
 use async_trait::async_trait;
@@ -62,6 +62,8 @@ enum MessageContent {
 enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: ImageSource },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -73,6 +75,14 @@ enum ContentBlock {
         tool_use_id: String,
         content: String,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ImageSource {
+    #[serde(rename = "type")]
+    source_type: String,
+    media_type: String,
+    data: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,13 +188,13 @@ fn convert_messages(messages: &[ChatMessage]) -> Vec<ToolMessage> {
                     role: "user".to_string(),
                     content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                         tool_use_id: m.tool_call_id.clone().unwrap_or_default(),
-                        content: m.content.clone().unwrap_or_default(),
+                        content: m.text_content_lossy().unwrap_or_default(),
                     }]),
                 }
             } else if m.role == "assistant" && m.tool_calls.is_some() {
                 // Assistant with tool calls → content blocks
                 let mut blocks = Vec::new();
-                if let Some(text) = m.content.as_deref() {
+                if let Some(text) = m.text_content() {
                     if !text.is_empty() {
                         blocks.push(ContentBlock::Text {
                             text: text.to_string(),
@@ -205,10 +215,37 @@ fn convert_messages(messages: &[ChatMessage]) -> Vec<ToolMessage> {
                     content: MessageContent::Blocks(blocks),
                 }
             } else {
-                // Regular user/assistant message
-                ToolMessage {
-                    role: m.role.clone(),
-                    content: MessageContent::Text(m.content.clone().unwrap_or_default()),
+                // Regular user/assistant message — handle multimodal parts
+                match &m.content {
+                    Some(crate::providers::traits::MessageContent::Parts(parts)) => {
+                        let blocks = parts
+                            .iter()
+                            .map(|p| match p {
+                                ContentPart::Text { text } => {
+                                    ContentBlock::Text { text: text.clone() }
+                                }
+                                ContentPart::Image { data, media_type } => {
+                                    ContentBlock::Image {
+                                        source: ImageSource {
+                                            source_type: "base64".to_string(),
+                                            media_type: media_type.clone(),
+                                            data: data.clone(),
+                                        },
+                                    }
+                                }
+                            })
+                            .collect();
+                        ToolMessage {
+                            role: m.role.clone(),
+                            content: MessageContent::Blocks(blocks),
+                        }
+                    }
+                    _ => ToolMessage {
+                        role: m.role.clone(),
+                        content: MessageContent::Text(
+                            m.text_content_lossy().unwrap_or_default(),
+                        ),
+                    },
                 }
             }
         })
@@ -481,12 +518,7 @@ mod tests {
     #[tokio::test]
     async fn chat_with_tools_fails_without_key() {
         let p = AnthropicProvider::new(None);
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: Some("hello".to_string()),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![ChatMessage::user("hello")];
         let result = p
             .chat_with_tools(None, &messages, &[], "claude-3-opus", 0.7, 4096)
             .await;
@@ -716,9 +748,10 @@ mod tests {
 
     #[test]
     fn convert_messages_maps_tool_result() {
+        use crate::providers::traits::MessageContent as SharedContent;
         let msgs = vec![ChatMessage {
             role: "tool".to_string(),
-            content: Some("file list here".to_string()),
+            content: Some(SharedContent::Text("file list here".to_string())),
             tool_calls: None,
             tool_call_id: Some("toolu_abc".to_string()),
         }];
@@ -745,9 +778,10 @@ mod tests {
 
     #[test]
     fn convert_messages_maps_tool_result_serialization() {
+        use crate::providers::traits::MessageContent as SharedContent;
         let msgs = vec![ChatMessage {
             role: "tool".to_string(),
-            content: Some("output".to_string()),
+            content: Some(SharedContent::Text("output".to_string())),
             tool_calls: None,
             tool_call_id: Some("toolu_1".to_string()),
         }];
@@ -761,9 +795,10 @@ mod tests {
 
     #[test]
     fn convert_messages_maps_assistant_with_tool_calls() {
+        use crate::providers::traits::MessageContent as SharedContent;
         let msgs = vec![ChatMessage {
             role: "assistant".to_string(),
-            content: Some("I'll run that.".to_string()),
+            content: Some(SharedContent::Text("I'll run that.".to_string())),
             tool_calls: Some(vec![ToolCallRequest {
                 id: "toolu_xyz".to_string(),
                 name: "shell".to_string(),
@@ -820,12 +855,7 @@ mod tests {
 
     #[test]
     fn convert_messages_preserves_plain_user_message() {
-        let msgs = vec![ChatMessage {
-            role: "user".to_string(),
-            content: Some("hello".to_string()),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let msgs = vec![ChatMessage::user("hello")];
         let wire = convert_messages(&msgs);
         assert_eq!(wire[0].role, "user");
         match &wire[0].content {

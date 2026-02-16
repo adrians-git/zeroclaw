@@ -521,6 +521,7 @@ Allowlist Telegram @username or numeric user ID, then run `zeroclaw onboard --ch
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs(),
+                        images: vec![],
                     };
 
                     if tx.send(msg).await.is_err() {
@@ -538,6 +539,25 @@ Allowlist Telegram @username or numeric user ID, then run `zeroclaw onboard --ch
             .await
             .map(|r| r.status().is_success())
             .unwrap_or(false)
+    }
+
+    async fn send_image(
+        &self,
+        data: &[u8],
+        media_type: &str,
+        recipient: &str,
+        caption: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let ext = match media_type {
+            "image/png" => "png",
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            _ => "png",
+        };
+        let file_name = format!("image.{ext}");
+        self.send_photo_bytes(recipient, data.to_vec(), &file_name, caption)
+            .await
     }
 }
 

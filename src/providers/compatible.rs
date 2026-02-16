@@ -342,7 +342,7 @@ fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
         .iter()
         .map(|m| Message {
             role: m.role.clone(),
-            content: m.content.clone(),
+            content: m.text_content_lossy(),
             tool_calls: m.tool_calls.as_ref().map(|calls| {
                 calls
                     .iter()
@@ -504,7 +504,7 @@ impl Provider for OpenAiCompatibleProvider {
             .iter()
             .map(|m| Message {
                 role: m.role.clone(),
-                content: m.content.clone(),
+                content: m.text_content_lossy(),
                 tool_calls: None,
                 tool_call_id: None,
             })
@@ -536,8 +536,8 @@ impl Provider for OpenAiCompatibleProvider {
                     return self
                         .chat_via_responses(
                             api_key,
-                            system.and_then(|m| m.content.as_deref()),
-                            user_msg.content.as_deref().unwrap_or(""),
+                            system.and_then(|m| m.text_content()),
+                            user_msg.text_content().unwrap_or(""),
                             model,
                         )
                         .await

@@ -32,6 +32,7 @@ use crate::config::DelegateAgentConfig;
 use crate::memory::Memory;
 use crate::runtime::{NativeRuntime, RuntimeAdapter};
 use crate::security::SecurityPolicy;
+use crate::skills::Skill;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -60,6 +61,7 @@ pub fn all_tools(
     browser_config: &crate::config::BrowserConfig,
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
+    skills: &[Skill],
 ) -> Vec<Box<dyn Tool>> {
     all_tools_with_runtime(
         security,
@@ -69,6 +71,7 @@ pub fn all_tools(
         browser_config,
         agents,
         fallback_api_key,
+        skills,
     )
 }
 
@@ -81,6 +84,7 @@ pub fn all_tools_with_runtime(
     browser_config: &crate::config::BrowserConfig,
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
+    skills: &[Skill],
 ) -> Vec<Box<dyn Tool>> {
     let mut tools: Vec<Box<dyn Tool>> = vec![
         Box::new(ShellTool::new(security.clone(), runtime)),
@@ -123,6 +127,12 @@ pub fn all_tools_with_runtime(
         )));
     }
 
+    // Add executable skill tools
+    tools.extend(crate::skills::bridge::skill_tools_from_skills(
+        skills,
+        security.clone(),
+    ));
+
     tools
 }
 
@@ -156,7 +166,7 @@ mod tests {
             session_name: None,
         };
 
-        let tools = all_tools(&security, mem, None, &browser, &HashMap::new(), None);
+        let tools = all_tools(&security, mem, None, &browser, &HashMap::new(), None, &[]);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"browser_open"));
     }
@@ -178,7 +188,7 @@ mod tests {
             session_name: None,
         };
 
-        let tools = all_tools(&security, mem, None, &browser, &HashMap::new(), None);
+        let tools = all_tools(&security, mem, None, &browser, &HashMap::new(), None, &[]);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"browser_open"));
     }
@@ -303,7 +313,7 @@ mod tests {
             },
         );
 
-        let tools = all_tools(&security, mem, None, &browser, &agents, Some("sk-test"));
+        let tools = all_tools(&security, mem, None, &browser, &agents, Some("sk-test"), &[]);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"delegate"));
     }
@@ -321,7 +331,7 @@ mod tests {
 
         let browser = BrowserConfig::default();
 
-        let tools = all_tools(&security, mem, None, &browser, &HashMap::new(), None);
+        let tools = all_tools(&security, mem, None, &browser, &HashMap::new(), None, &[]);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"delegate"));
     }

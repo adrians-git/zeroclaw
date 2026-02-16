@@ -1,5 +1,5 @@
 use crate::observability::{Observer, ObserverEvent};
-use crate::providers::traits::{ChatMessage, Provider, UsageInfo};
+use crate::providers::traits::{ChatMessage, ContentPart, MessageContent, Provider, UsageInfo};
 use crate::security::SecurityPolicy;
 use crate::tools::{Tool, ToolSpec};
 use serde::Serialize;
@@ -24,6 +24,14 @@ pub struct ToolInvocationRecord {
     pub success: bool,
 }
 
+/// Decoded image extracted from tool output.
+pub struct ImageData {
+    /// Raw image bytes.
+    pub data: Vec<u8>,
+    /// MIME type (e.g. "image/png").
+    pub media_type: String,
+}
+
 /// Result of a completed tool loop.
 pub struct ToolLoopResult {
     /// Final text response from the LLM.
@@ -36,6 +44,71 @@ pub struct ToolLoopResult {
     pub usage: Option<UsageInfo>,
     /// Detailed per-tool-call invocation records for the web UI.
     pub tool_invocations: Vec<ToolInvocationRecord>,
+    /// Images extracted from tool outputs for sending back via channels.
+    pub images: Vec<ImageData>,
+}
+
+/// Extract `data:image/...;base64,...` patterns from tool output.
+/// Returns (remaining_text, image_content_parts, decoded_image_data).
+fn extract_images(output: &str) -> (String, Vec<ContentPart>, Vec<ImageData>) {
+    let mut text_parts = Vec::new();
+    let mut image_parts = Vec::new();
+    let mut image_data = Vec::new();
+    let mut remaining = output;
+
+    while let Some(start) = remaining.find("data:image/") {
+        // Capture text before the data URI
+        let before = &remaining[..start];
+        if !before.trim().is_empty() {
+            text_parts.push(before.trim().to_string());
+        }
+
+        let uri_start = &remaining[start..];
+
+        // Find the end of "data:image/<type>;base64,"
+        let Some(b64_marker) = uri_start.find(";base64,") else {
+            // Not a valid data URI, treat as text
+            text_parts.push(remaining[start..start + 11].to_string());
+            remaining = &remaining[start + 11..];
+            continue;
+        };
+
+        let media_type = &uri_start[5..b64_marker]; // "image/png" etc.
+        let b64_start = b64_marker + 8; // skip ";base64,"
+
+        // Find end of base64 data (next whitespace, quote, or end of string)
+        let b64_data = &uri_start[b64_start..];
+        let b64_end = b64_data
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '}' || c == ']')
+            .unwrap_or(b64_data.len());
+        let b64 = &b64_data[..b64_end];
+
+        if !b64.is_empty() {
+            // Add as content part for the LLM
+            image_parts.push(ContentPart::Image {
+                data: b64.to_string(),
+                media_type: media_type.to_string(),
+            });
+
+            // Decode for channel output
+            use base64::Engine;
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                image_data.push(ImageData {
+                    data: bytes,
+                    media_type: media_type.to_string(),
+                });
+            }
+        }
+
+        remaining = &uri_start[b64_start + b64_end..];
+    }
+
+    // Remaining text
+    if !remaining.trim().is_empty() {
+        text_parts.push(remaining.trim().to_string());
+    }
+
+    (text_parts.join("\n"), image_parts, image_data)
 }
 
 /// Run the tool calling loop: send messages to the LLM, execute any requested
@@ -62,7 +135,7 @@ pub async fn run_tool_loop(
 
     let mut messages = vec![ChatMessage {
         role: "user".to_string(),
-        content: Some(initial_message.to_string()),
+        content: Some(MessageContent::Text(initial_message.to_string())),
         tool_calls: None,
         tool_call_id: None,
     }];
@@ -70,6 +143,7 @@ pub async fn run_tool_loop(
     let mut total_tool_calls = 0u32;
     let mut last_usage: Option<UsageInfo> = None;
     let mut tool_invocations: Vec<ToolInvocationRecord> = Vec::new();
+    let mut collected_images: Vec<ImageData> = Vec::new();
 
     for iteration in 0..config.max_iterations {
         let response = provider
@@ -95,13 +169,14 @@ pub async fn run_tool_loop(
                 total_tool_calls,
                 usage: last_usage,
                 tool_invocations,
+                images: collected_images,
             });
         }
 
         // Append assistant message (with tool calls) to history
         messages.push(ChatMessage {
             role: "assistant".to_string(),
-            content: response.content.clone(),
+            content: response.content.clone().map(MessageContent::Text),
             tool_calls: Some(response.tool_calls.clone()),
             tool_call_id: None,
         });
@@ -120,10 +195,25 @@ pub async fn run_tool_loop(
                 success,
             });
 
-            // Append tool result message
+            // Check for images in the tool output
+            let (text, image_parts, images) = extract_images(&result_text);
+            collected_images.extend(images);
+
+            // Build tool result message — multimodal if images were found
+            let content = if image_parts.is_empty() {
+                MessageContent::Text(result_text)
+            } else {
+                let mut parts: Vec<ContentPart> = Vec::new();
+                if !text.is_empty() {
+                    parts.push(ContentPart::Text { text });
+                }
+                parts.extend(image_parts);
+                MessageContent::Parts(parts)
+            };
+
             messages.push(ChatMessage {
                 role: "tool".to_string(),
-                content: Some(result_text),
+                content: Some(content),
                 tool_calls: None,
                 tool_call_id: Some(tc.id.clone()),
             });
@@ -154,6 +244,7 @@ pub async fn run_tool_loop(
         total_tool_calls,
         usage: last_usage,
         tool_invocations,
+        images: collected_images,
     })
 }
 
@@ -750,6 +841,50 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 100);
         assert_eq!(usage.completion_tokens, 50);
         assert_eq!(usage.total_tokens, 150);
+    }
+
+    #[test]
+    fn extract_images_no_images() {
+        let (text, parts, images) = extract_images("just plain text");
+        assert_eq!(text, "just plain text");
+        assert!(parts.is_empty());
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn extract_images_single_image() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"fake png data");
+        let input = format!("data:image/png;base64,{b64}");
+        let (text, parts, images) = extract_images(&input);
+        assert!(text.is_empty());
+        assert_eq!(parts.len(), 1);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].media_type, "image/png");
+        assert_eq!(images[0].data, b"fake png data");
+    }
+
+    #[test]
+    fn extract_images_with_surrounding_text() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"img");
+        let input = format!("Here is the image: data:image/jpeg;base64,{b64} and some more text");
+        let (text, parts, images) = extract_images(&input);
+        assert!(text.contains("Here is the image:"));
+        assert!(text.contains("and some more text"));
+        assert_eq!(parts.len(), 1);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].media_type, "image/jpeg");
+    }
+
+    #[test]
+    fn extract_images_json_wrapped() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"img");
+        let input = format!(r#"{{"url": "data:image/png;base64,{b64}"}}"#);
+        let (_, parts, images) = extract_images(&input);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(images.len(), 1);
     }
 
     #[tokio::test]

@@ -416,6 +416,7 @@ impl Channel for EmailChannel {
                             content,
                             channel: "email".to_string(),
                             timestamp: ts,
+                            images: vec![],
                         };
                         if tx.send(msg).await.is_err() {
                             return Ok(());

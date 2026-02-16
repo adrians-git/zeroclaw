@@ -392,6 +392,7 @@ pub async fn run(
     } else {
         None
     };
+    let skills = crate::skills::load_skills(&config.workspace_dir);
     let tools_registry = tools::all_tools_with_runtime(
         &security,
         runtime,
@@ -400,6 +401,7 @@ pub async fn run(
         &config.browser,
         &config.agents,
         config.api_key.as_deref(),
+        &skills,
     );
 
     // ── Resolve provider ─────────────────────────────────────────
@@ -427,7 +429,6 @@ pub async fn run(
     });
 
     // ── Build system prompt from workspace MD files (OpenClaw framework) ──
-    let skills = crate::skills::load_skills(&config.workspace_dir);
     let mut tool_descs: Vec<(&str, &str)> = vec![
         (
             "shell",
@@ -579,7 +580,7 @@ pub async fn run(
                 let mut ctx = String::new();
                 for msg in &history[1..] {
                     // Skip system prompt (index 0), include user/assistant turns
-                    let _ = writeln!(ctx, "[{}]: {}", msg.role, msg.content.as_deref().unwrap_or(""));
+                    let _ = writeln!(ctx, "[{}]: {}", msg.role, msg.text_content().unwrap_or(""));
                 }
                 format!("{ctx}\n[user]: {enriched}")
             } else {
@@ -823,12 +824,12 @@ I will now call the tool with this payload:
 
         // System prompt preserved
         assert_eq!(history[0].role, "system");
-        assert_eq!(history[0].content.as_deref(), Some("system prompt"));
+        assert_eq!(history[0].text_content(), Some("system prompt"));
         // Trimmed to limit
         assert_eq!(history.len(), MAX_HISTORY_MESSAGES + 1); // +1 for system
                                                              // Most recent messages preserved
         let last = &history[history.len() - 1];
-        assert_eq!(last.content, Some(format!("msg {}", MAX_HISTORY_MESSAGES + 19)));
+        assert_eq!(last.text_content_lossy(), Some(format!("msg {}", MAX_HISTORY_MESSAGES + 19)));
     }
 
     #[test]

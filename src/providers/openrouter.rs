@@ -163,7 +163,7 @@ fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
         .iter()
         .map(|m| Message {
             role: m.role.clone(),
-            content: m.content.clone(),
+            content: m.text_content_lossy(),
             tool_calls: m.tool_calls.as_ref().map(|calls| {
                 calls
                     .iter()
@@ -315,7 +315,7 @@ impl Provider for OpenRouterProvider {
             .iter()
             .map(|m| Message {
                 role: m.role.clone(),
-                content: m.content.clone(),
+                content: m.text_content_lossy(),
                 tool_calls: None,
                 tool_call_id: None,
             })
@@ -696,9 +696,10 @@ mod tests {
 
     #[test]
     fn convert_messages_preserves_tool_result() {
+        use crate::providers::traits::MessageContent as SharedContent;
         let msgs = vec![ChatMessage {
             role: "tool".to_string(),
-            content: Some("file list here".to_string()),
+            content: Some(SharedContent::Text("file list here".to_string())),
             tool_calls: None,
             tool_call_id: Some("call_1".to_string()),
         }];
