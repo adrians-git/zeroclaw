@@ -1,4 +1,4 @@
-use super::traits::ChatMessage;
+use super::traits::{ChatMessage, LlmResponse, ModelInfo};
 use super::Provider;
 use async_trait::async_trait;
 use std::time::Duration;

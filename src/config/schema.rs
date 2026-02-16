@@ -65,6 +65,9 @@ pub struct Config {
     #[serde(default)]
     pub identity: IdentityConfig,
 
+    #[serde(default)]
+    pub agent: AgentConfig,
+
     /// Named delegate agents for agent-to-agent handoff.
     ///
     /// ```toml
@@ -932,6 +935,7 @@ impl Default for Config {
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
             identity: IdentityConfig::default(),
+            agent: AgentConfig::default(),
             agents: HashMap::new(),
         }
     }
@@ -1278,6 +1282,7 @@ mod tests {
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
             identity: IdentityConfig::default(),
+            agent: AgentConfig::default(),
             agents: HashMap::new(),
         };
 
@@ -1350,6 +1355,7 @@ default_temperature = 0.7
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
             identity: IdentityConfig::default(),
+            agent: AgentConfig::default(),
             agents: HashMap::new(),
         };
 

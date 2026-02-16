@@ -24,7 +24,7 @@ use axum::{
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -158,7 +158,7 @@ fn client_key_from_headers(headers: &HeaderMap) -> String {
 /// Shared state for all axum handlers
 #[derive(Clone)]
 pub struct AppState {
-    pub provider: Arc<dyn Provider>,
+    pub provider: Arc<RwLock<Arc<dyn Provider>>>,
     pub model: String,
     pub temperature: f64,
     pub mem: Arc<dyn Memory>,
@@ -170,6 +170,10 @@ pub struct AppState {
     pub whatsapp: Option<Arc<WhatsAppChannel>>,
     /// `WhatsApp` app secret for webhook signature verification (`X-Hub-Signature-256`)
     pub whatsapp_app_secret: Option<Arc<str>>,
+    /// API key for runtime provider switching
+    pub api_key: Option<String>,
+    /// Reliability config for recreating provider chains
+    pub reliability_config: crate::config::ReliabilityConfig,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -197,8 +201,8 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             &config.reliability,
         )?,
     )));
-    let api_key: Option<Arc<str>> = config.api_key.as_deref().map(Arc::from);
-    let reliability_config = Arc::new(config.reliability.clone());
+    let _api_key: Option<Arc<str>> = config.api_key.as_deref().map(Arc::from);
+    let _reliability_config = Arc::new(config.reliability.clone());
     let model = config
         .default_model
         .clone()
@@ -209,44 +213,6 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         &config.workspace_dir,
         config.api_key.as_deref(),
     )?);
-
-    // ── Security + Tools + Tool Loop Config + System Prompt ─────
-    let security = Arc::new(SecurityPolicy::from_config(
-        &config.autonomy,
-        &config.workspace_dir,
-    ));
-    let composio_key = if config.composio.enabled {
-        config.composio.api_key.as_deref()
-    } else {
-        None
-    };
-    let tool_registry: Arc<Vec<Box<dyn Tool>>> = Arc::new(tools::all_tools(
-        &security,
-        mem.clone(),
-        composio_key,
-        &config.browser,
-    ));
-    let tool_loop_config = Arc::new(ToolLoopConfig {
-        max_iterations: config.agent.max_tool_iterations,
-        max_tokens: config.agent.max_tokens,
-    });
-
-    // Build system prompt
-    let skills = crate::skills::load_skills(&config.workspace_dir);
-    let tool_descs: Vec<(&str, &str)> = vec![
-        ("shell", "Execute terminal commands"),
-        ("file_read", "Read file contents"),
-        ("file_write", "Write file contents"),
-        ("memory_store", "Save to memory"),
-        ("memory_recall", "Search memory"),
-        ("memory_forget", "Delete a memory entry"),
-    ];
-    let system_prompt: Arc<str> = Arc::from(crate::channels::build_system_prompt(
-        &config.workspace_dir,
-        &model,
-        &tool_descs,
-        &skills,
-    ));
 
     // Extract webhook secret for authentication
     let webhook_secret: Option<Arc<str>> = config
@@ -298,25 +264,6 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     let idempotency_store = Arc::new(IdempotencyStore::new(Duration::from_secs(
         config.gateway.idempotency_ttl_secs.max(1),
     )));
-
-    // ── Runtime settings (mutable via web UI) ──────────────
-    let initial_provider_name = config
-        .default_provider
-        .as_deref()
-        .unwrap_or("openrouter")
-        .to_string();
-    let runtime_settings = Arc::new(RwLock::new(RuntimeSettings {
-        provider_name: initial_provider_name,
-        model: model.clone(),
-        temperature,
-        max_iterations: config.agent.max_tool_iterations,
-        max_tokens: config.agent.max_tokens,
-    }));
-
-    // ── Shared config values for API endpoints ─────────────
-    let memory_backend: Arc<str> = Arc::from(config.memory.backend.as_str());
-    let autonomy_level: Arc<str> = Arc::from(format!("{:?}", config.autonomy.level).to_lowercase());
-    let workspace_dir: Arc<str> = Arc::from(config.workspace_dir.to_string_lossy().as_ref());
 
     // ── Tunnel ────────────────────────────────────────────────
     let tunnel = crate::tunnel::create_tunnel(&config.tunnel)?;
@@ -379,6 +326,8 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         idempotency_store,
         whatsapp: whatsapp_channel,
         whatsapp_app_secret,
+        api_key: config.api_key.clone(),
+        reliability_config: config.reliability.clone(),
     };
 
     // Build router with middleware
@@ -388,6 +337,10 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/webhook", post(handle_webhook))
         .route("/whatsapp", get(handle_whatsapp_verify))
         .route("/whatsapp", post(handle_whatsapp_message))
+        .route("/api/models", get(handle_api_models))
+        .route("/api/providers", get(handle_api_providers))
+        .route("/api/config", get(handle_api_config_get).post(handle_api_config_post))
+        .route("/api/status", get(handle_api_status))
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
@@ -552,8 +505,8 @@ async fn handle_webhook(
             .await;
     }
 
-    match state
-        .provider
+    let provider = state.provider.read().unwrap().clone();
+    match provider
         .chat(message, &state.model, state.temperature)
         .await
     {
@@ -706,8 +659,8 @@ async fn handle_whatsapp_message(
         }
 
         // Call the LLM
-        match state
-            .provider
+        let provider = state.provider.read().unwrap().clone();
+        match provider
             .chat(&msg.content, &state.model, state.temperature)
             .await
         {
@@ -733,6 +686,135 @@ async fn handle_whatsapp_message(
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// API HANDLERS — runtime provider switching, model discovery, status
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// GET /api/models — list available models from the current provider
+async fn handle_api_models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !check_bearer(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"})));
+    }
+    let provider = state.provider.read().unwrap().clone();
+    match provider.list_models().await {
+        Ok(models) => {
+            let body = serde_json::json!({"models": models});
+            (StatusCode::OK, Json(body))
+        }
+        Err(e) => {
+            let err = serde_json::json!({"error": format!("Failed to list models: {e}")});
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(err))
+        }
+    }
+}
+
+/// GET /api/providers — list known provider names
+async fn handle_api_providers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !check_bearer(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"})));
+    }
+    let body = serde_json::json!({"providers": providers::known_providers()});
+    (StatusCode::OK, Json(body))
+}
+
+/// GET /api/config — return current runtime config
+async fn handle_api_config_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !check_bearer(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"})));
+    }
+    let body = serde_json::json!({
+        "model": state.model,
+        "temperature": state.temperature,
+    });
+    (StatusCode::OK, Json(body))
+}
+
+/// POST /api/config — update runtime config (e.g. switch provider)
+async fn handle_api_config_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !check_bearer(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"})));
+    }
+
+    // Switch provider if requested
+    if let Some(new_provider_name) = payload.get("provider").and_then(|v| v.as_str()) {
+        let known = providers::known_providers();
+        if !known.contains(&new_provider_name) && !new_provider_name.starts_with("custom:") {
+            let err = serde_json::json!({
+                "error": format!("Unknown provider: {new_provider_name}"),
+                "known_providers": known,
+            });
+            return (StatusCode::BAD_REQUEST, Json(err));
+        }
+
+        match providers::create_resilient_provider(
+            new_provider_name,
+            state.api_key.as_deref(),
+            &state.reliability_config,
+        ) {
+            Ok(new_provider) => {
+                let new_arc: Arc<dyn Provider> = Arc::from(new_provider);
+                *state.provider.write().unwrap() = new_arc;
+                let body = serde_json::json!({
+                    "status": "ok",
+                    "provider": new_provider_name,
+                });
+                (StatusCode::OK, Json(body))
+            }
+            Err(e) => {
+                let err = serde_json::json!({"error": format!("Failed to create provider: {e}")});
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(err))
+            }
+        }
+    } else {
+        let err = serde_json::json!({"error": "No 'provider' field in request body"});
+        (StatusCode::BAD_REQUEST, Json(err))
+    }
+}
+
+/// GET /api/status — daemon/gateway status summary
+async fn handle_api_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !check_bearer(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"})));
+    }
+    let body = serde_json::json!({
+        "status": "ok",
+        "model": state.model,
+        "temperature": state.temperature,
+        "paired": state.pairing.is_paired(),
+        "runtime": crate::health::snapshot_json(),
+    });
+    (StatusCode::OK, Json(body))
+}
+
+/// Check if the request has a valid bearer token (when pairing is active).
+fn check_bearer(state: &AppState, headers: &HeaderMap) -> bool {
+    if !state.pairing.require_pairing() {
+        return true;
+    }
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    state.pairing.is_authenticated(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,6 +827,63 @@ mod tests {
     use http_body_util::BodyExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+
+    /// Extract a query parameter value from a URI string (legacy raw-TCP helper).
+    fn extract_query_param<'a>(uri: &'a str, param: &str) -> Option<&'a str> {
+        let query_string = uri.split('?').nth(1)?;
+        for pair in query_string.split('&') {
+            let mut kv = pair.splitn(2, '=');
+            let key = kv.next()?;
+            let value = kv.next()?;
+            if key == param {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    /// Decode a percent-encoded (URL-encoded) string.
+    fn urldecode(input: &str) -> String {
+        let input = input.replace('+', " ");
+        let mut result = String::with_capacity(input.len());
+        let mut chars = input.chars();
+        while let Some(c) = chars.next() {
+            if c == '%' {
+                let hex: String = chars.by_ref().take(2).collect();
+                if hex.len() == 2 {
+                    if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                        result.push(byte as char);
+                        continue;
+                    }
+                }
+                result.push('%');
+                result.push_str(&hex);
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+
+    /// Check bearer token auth from a raw HTTP request string (legacy raw-TCP helper).
+    fn check_bearer_auth(
+        raw_request: &str,
+        guard: &crate::security::pairing::PairingGuard,
+    ) -> Result<()> {
+        if !guard.require_pairing() {
+            return Ok(());
+        }
+        for line in raw_request.lines() {
+            if let Some(value) = line.strip_prefix("Authorization: Bearer ") {
+                let token = value.trim();
+                if guard.is_authenticated(token) {
+                    return Ok(());
+                }
+                anyhow::bail!("Invalid bearer token");
+            }
+        }
+        anyhow::bail!("Missing Authorization header")
+    }
 
     #[test]
     fn security_body_limit_is_64kb() {
@@ -953,7 +1092,7 @@ mod tests {
         let memory: Arc<dyn Memory> = Arc::new(MockMemory);
 
         let state = AppState {
-            provider,
+            provider: Arc::new(RwLock::new(provider)),
             model: "test-model".into(),
             temperature: 0.0,
             mem: memory,
@@ -964,6 +1103,8 @@ mod tests {
             idempotency_store: Arc::new(IdempotencyStore::new(Duration::from_secs(300))),
             whatsapp: None,
             whatsapp_app_secret: None,
+            api_key: None,
+            reliability_config: crate::config::ReliabilityConfig::default(),
         };
 
         let mut headers = HeaderMap::new();
@@ -1001,7 +1142,7 @@ mod tests {
         let memory: Arc<dyn Memory> = tracking_impl.clone();
 
         let state = AppState {
-            provider,
+            provider: Arc::new(RwLock::new(provider)),
             model: "test-model".into(),
             temperature: 0.0,
             mem: memory,
@@ -1012,6 +1153,8 @@ mod tests {
             idempotency_store: Arc::new(IdempotencyStore::new(Duration::from_secs(300))),
             whatsapp: None,
             whatsapp_app_secret: None,
+            api_key: None,
+            reliability_config: crate::config::ReliabilityConfig::default(),
         };
 
         let headers = HeaderMap::new();

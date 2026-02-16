@@ -106,6 +106,7 @@ pub fn run_wizard() -> Result<Config> {
         secrets: secrets_config,
         browser: BrowserConfig::default(),
         identity: crate::config::IdentityConfig::default(),
+        agent: AgentConfig::default(),
         agents: std::collections::HashMap::new(),
     };
 
@@ -298,6 +299,7 @@ pub fn run_quick_setup(
         secrets: SecretsConfig::default(),
         browser: BrowserConfig::default(),
         identity: crate::config::IdentityConfig::default(),
+        agent: AgentConfig::default(),
         agents: std::collections::HashMap::new(),
     };
 

@@ -8,10 +8,41 @@ pub mod reliable;
 pub mod router;
 pub mod traits;
 
-pub use traits::{ChatMessage, Provider};
+pub use traits::{ChatMessage, LlmResponse, ModelInfo, Provider, ToolCallRequest, UsageInfo};
 
 use compatible::{AuthStyle, OpenAiCompatibleProvider};
 use reliable::ReliableProvider;
+
+/// Return the list of known provider names accepted by `create_provider`.
+pub fn known_providers() -> &'static [&'static str] {
+    &[
+        "openai",
+        "anthropic",
+        "openrouter",
+        "ollama",
+        "gemini",
+        "venice",
+        "vercel",
+        "cloudflare",
+        "moonshot",
+        "synthetic",
+        "opencode",
+        "zai",
+        "glm",
+        "minimax",
+        "bedrock",
+        "qianfan",
+        "groq",
+        "mistral",
+        "xai",
+        "deepseek",
+        "together",
+        "fireworks",
+        "perplexity",
+        "cohere",
+        "copilot",
+    ]
+}
 
 const MAX_API_ERROR_CHARS: usize = 200;
 

@@ -240,9 +240,13 @@ impl Provider for OllamaProvider {
     ) -> anyhow::Result<LlmResponse> {
         let mut wire_messages = Vec::new();
 
-        if !response.status().is_success() {
-            let err = super::api_error("Ollama", response).await;
-            anyhow::bail!("{err}. Is Ollama running? (brew install ollama && ollama serve)");
+        if let Some(sys) = system_prompt {
+            wire_messages.push(Message {
+                role: "system".to_string(),
+                content: Some(sys.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            });
         }
 
         wire_messages.extend(convert_messages(messages));

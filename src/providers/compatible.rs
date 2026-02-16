@@ -2,7 +2,10 @@
 //! Most LLM APIs follow the same `/v1/chat/completions` format.
 //! This module provides a single implementation that works for all of them.
 
-use crate::providers::traits::{ChatMessage, Provider};
+use crate::providers::traits::{
+    ChatMessage, LlmResponse, ModelInfo, Provider, ToolCallRequest, UsageInfo,
+};
+use crate::tools::ToolSpec;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -127,6 +130,14 @@ struct ApiChatResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct WireUsage {
+    #[serde(default)]
+    prompt_tokens: u32,
+    #[serde(default)]
+    completion_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
 struct Choice {
     message: ResponseMessage,
     #[serde(default)]
@@ -143,6 +154,8 @@ struct ResponseMessage {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct ToolCall {
+    #[serde(default)]
+    id: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
     function: Option<Function>,
@@ -241,6 +254,40 @@ impl OpenAiCompatibleProvider {
         }
     }
 
+    fn api_key(&self) -> anyhow::Result<&str> {
+        self.api_key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} API key not set. Run `zeroclaw onboard` or set the appropriate env var.",
+                self.name
+            )
+        })
+    }
+
+    fn apply_auth(
+        &self,
+        req: reqwest::RequestBuilder,
+        api_key: &str,
+    ) -> reqwest::RequestBuilder {
+        self.apply_auth_header(req, api_key)
+    }
+
+    async fn send_request(&self, request: &ChatRequest) -> anyhow::Result<ApiChatResponse> {
+        let api_key = self.api_key()?;
+
+        let url = self.chat_completions_url();
+        let response = self
+            .apply_auth_header(self.client.post(&url).json(request), api_key)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error = response.text().await?;
+            anyhow::bail!("{} API error: {error}", self.name);
+        }
+
+        Ok(response.json().await?)
+    }
+
     async fn chat_via_responses(
         &self,
         api_key: &str,
@@ -277,6 +324,87 @@ impl OpenAiCompatibleProvider {
     }
 }
 
+fn convert_tools(tools: &[ToolSpec]) -> Vec<ToolDefinition> {
+    tools
+        .iter()
+        .map(|t| ToolDefinition {
+            tool_type: "function".to_string(),
+            function: FunctionDef {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                parameters: t.parameters.clone(),
+            },
+        })
+        .collect()
+}
+
+fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
+    messages
+        .iter()
+        .map(|m| Message {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            tool_calls: m.tool_calls.as_ref().map(|calls| {
+                calls
+                    .iter()
+                    .map(|tc| WireToolCall {
+                        id: tc.id.clone(),
+                        call_type: "function".to_string(),
+                        function: WireFunction {
+                            name: tc.name.clone(),
+                            arguments: tc.arguments.clone(),
+                        },
+                    })
+                    .collect()
+            }),
+            tool_call_id: m.tool_call_id.clone(),
+        })
+        .collect()
+}
+
+fn parse_response(resp: ApiChatResponse, provider_name: &str) -> anyhow::Result<LlmResponse> {
+    let choice = resp
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No response from {}", provider_name))?;
+
+    let tool_calls: Vec<ToolCallRequest> = choice
+        .message
+        .tool_calls
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tc| {
+            let func = tc.function?;
+            Some(ToolCallRequest {
+                id: tc.id.unwrap_or_default(),
+                name: func.name.unwrap_or_default(),
+                arguments: func.arguments.unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    let finish_reason = match choice.finish_reason.as_deref() {
+        Some("tool_calls") => "tool_calls".to_string(),
+        _ if !tool_calls.is_empty() => "tool_calls".to_string(),
+        Some(r) => r.to_string(),
+        None => "stop".to_string(),
+    };
+
+    let usage = resp.usage.map(|u| UsageInfo {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.prompt_tokens + u.completion_tokens,
+    });
+
+    Ok(LlmResponse {
+        content: choice.message.content,
+        tool_calls,
+        finish_reason,
+        usage,
+    })
+}
+
 #[async_trait]
 impl Provider for OpenAiCompatibleProvider {
     async fn chat_with_system(
@@ -286,6 +414,7 @@ impl Provider for OpenAiCompatibleProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
+        let api_key = self.api_key()?;
         let mut messages = Vec::new();
 
         if let Some(sys) = system_prompt {
@@ -370,18 +499,15 @@ impl Provider for OpenAiCompatibleProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "{} API key not set. Run `zeroclaw onboard` or set the appropriate env var.",
-                self.name
-            )
-        })?;
+        let api_key = self.api_key()?;
 
         let api_messages: Vec<Message> = messages
             .iter()
             .map(|m| Message {
                 role: m.role.clone(),
                 content: m.content.clone(),
+                tool_calls: None,
+                tool_call_id: None,
             })
             .collect();
 
@@ -389,6 +515,8 @@ impl Provider for OpenAiCompatibleProvider {
             model: model.to_string(),
             messages: api_messages,
             temperature,
+            tools: None,
+            max_tokens: None,
         };
 
         let url = self.chat_completions_url();
@@ -409,8 +537,8 @@ impl Provider for OpenAiCompatibleProvider {
                     return self
                         .chat_via_responses(
                             api_key,
-                            system.map(|m| m.content.as_str()),
-                            &user_msg.content,
+                            system.and_then(|m| m.content.as_deref()),
+                            user_msg.content.as_deref().unwrap_or(""),
                             model,
                         )
                         .await

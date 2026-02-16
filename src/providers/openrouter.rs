@@ -1,4 +1,7 @@
-use crate::providers::traits::{ChatMessage, Provider};
+use crate::providers::traits::{
+    ChatMessage, LlmResponse, ModelInfo, Provider, ToolCallRequest, UsageInfo,
+};
+use crate::tools::ToolSpec;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -112,7 +115,7 @@ impl OpenRouterProvider {
         })
     }
 
-    async fn send_request(&self, request: &ChatRequest) -> anyhow::Result<ChatResponse> {
+    async fn send_request(&self, request: &ChatRequest) -> anyhow::Result<ApiChatResponse> {
         let api_key = self.api_key()?;
 
         let response = self
@@ -175,7 +178,7 @@ fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
         .collect()
 }
 
-fn parse_response(resp: ChatResponse) -> anyhow::Result<LlmResponse> {
+fn parse_response(resp: ApiChatResponse) -> anyhow::Result<LlmResponse> {
     let choice = resp
         .choices
         .into_iter()
@@ -238,6 +241,7 @@ impl Provider for OpenRouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
+        let api_key = self.api_key()?;
         let mut messages = Vec::new();
 
         if let Some(sys) = system_prompt {
@@ -287,7 +291,7 @@ impl Provider for OpenRouterProvider {
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.content)
+            .and_then(|c| c.message.content)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))
     }
 
@@ -297,14 +301,15 @@ impl Provider for OpenRouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let api_key = self.api_key.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("OpenRouter API key not set. Run `zeroclaw onboard` or set OPENROUTER_API_KEY env var."))?;
+        let api_key = self.api_key()?;
 
         let api_messages: Vec<Message> = messages
             .iter()
             .map(|m| Message {
                 role: m.role.clone(),
                 content: m.content.clone(),
+                tool_calls: None,
+                tool_call_id: None,
             })
             .collect();
 
@@ -312,6 +317,8 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: api_messages,
             temperature,
+            tools: None,
+            max_tokens: None,
         };
 
         let response = self
@@ -524,7 +531,7 @@ mod tests {
     #[test]
     fn response_deserializes_text_only() {
         let json = r#"{"choices":[{"message":{"content":"Hello!"},"finish_reason":"stop"}]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices[0].message.content.as_deref(), Some("Hello!"));
         assert!(resp.choices[0].message.tool_calls.is_none());
     }
@@ -545,7 +552,7 @@ mod tests {
             }],
             "usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
         }"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         let tc = resp.choices[0].message.tool_calls.as_ref().unwrap();
         assert_eq!(tc.len(), 1);
         assert_eq!(tc[0].id, "call_abc");
@@ -557,7 +564,7 @@ mod tests {
     #[test]
     fn response_empty_choices() {
         let json = r#"{"choices":[]}"#;
-        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         assert!(resp.choices.is_empty());
     }
 
@@ -565,7 +572,7 @@ mod tests {
 
     #[test]
     fn parse_response_text() {
-        let resp = ChatResponse {
+        let resp = ApiChatResponse {
             choices: vec![Choice {
                 message: ResponseMessage {
                     content: Some("Hello".to_string()),
@@ -583,7 +590,7 @@ mod tests {
 
     #[test]
     fn parse_response_tool_calls() {
-        let resp = ChatResponse {
+        let resp = ApiChatResponse {
             choices: vec![Choice {
                 message: ResponseMessage {
                     content: None,
@@ -613,7 +620,7 @@ mod tests {
 
     #[test]
     fn parse_response_normalizes_finish_reason_when_tool_calls_present() {
-        let resp = ChatResponse {
+        let resp = ApiChatResponse {
             choices: vec![Choice {
                 message: ResponseMessage {
                     content: None,
@@ -636,7 +643,7 @@ mod tests {
 
     #[test]
     fn parse_response_empty_choices_errors() {
-        let resp = ChatResponse {
+        let resp = ApiChatResponse {
             choices: vec![],
             usage: None,
         };

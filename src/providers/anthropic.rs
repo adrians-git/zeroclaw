@@ -147,6 +147,120 @@ impl AnthropicProvider {
     fn is_setup_token(token: &str) -> bool {
         token.starts_with("sk-ant-oat01-")
     }
+
+    fn api_key(&self) -> anyhow::Result<&str> {
+        self.credential.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Anthropic API key not set. Set ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN."
+            )
+        })
+    }
+}
+
+fn convert_tools(tools: &[ToolSpec]) -> Vec<ToolDefinition> {
+    tools
+        .iter()
+        .map(|t| ToolDefinition {
+            name: t.name.clone(),
+            description: t.description.clone(),
+            input_schema: t.parameters.clone(),
+        })
+        .collect()
+}
+
+fn convert_messages(messages: &[ChatMessage]) -> Vec<ToolMessage> {
+    messages
+        .iter()
+        .map(|m| {
+            if m.role == "tool" {
+                // Tool result → Anthropic "user" role with tool_result content block
+                ToolMessage {
+                    role: "user".to_string(),
+                    content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                        tool_use_id: m.tool_call_id.clone().unwrap_or_default(),
+                        content: m.content.clone().unwrap_or_default(),
+                    }]),
+                }
+            } else if m.role == "assistant" && m.tool_calls.is_some() {
+                // Assistant with tool calls → content blocks
+                let mut blocks = Vec::new();
+                if let Some(text) = m.content.as_deref() {
+                    if !text.is_empty() {
+                        blocks.push(ContentBlock::Text {
+                            text: text.to_string(),
+                        });
+                    }
+                }
+                for tc in m.tool_calls.as_ref().unwrap() {
+                    let input: serde_json::Value =
+                        serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+                    blocks.push(ContentBlock::ToolUse {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        input,
+                    });
+                }
+                ToolMessage {
+                    role: "assistant".to_string(),
+                    content: MessageContent::Blocks(blocks),
+                }
+            } else {
+                // Regular user/assistant message
+                ToolMessage {
+                    role: m.role.clone(),
+                    content: MessageContent::Text(m.content.clone().unwrap_or_default()),
+                }
+            }
+        })
+        .collect()
+}
+
+fn parse_response(resp: ChatResponse) -> LlmResponse {
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for block in &resp.content {
+        match block {
+            ResponseBlock::Text { text, .. } => {
+                text_parts.push(text.clone());
+            }
+            ResponseBlock::ToolUse {
+                id, name, input, ..
+            } => {
+                tool_calls.push(ToolCallRequest {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string()),
+                });
+            }
+        }
+    }
+
+    let content = if text_parts.is_empty() {
+        None
+    } else {
+        Some(text_parts.join(""))
+    };
+
+    let finish_reason = match resp.stop_reason.as_deref() {
+        Some("tool_use") => "tool_calls".to_string(),
+        Some("end_turn") | None if !tool_calls.is_empty() => "tool_calls".to_string(),
+        Some("end_turn") | None => "stop".to_string(),
+        Some(r) => r.to_string(),
+    };
+
+    let usage = resp.usage.map(|u| UsageInfo {
+        prompt_tokens: u.input_tokens,
+        completion_tokens: u.output_tokens,
+        total_tokens: u.input_tokens + u.output_tokens,
+    });
+
+    LlmResponse {
+        content,
+        tool_calls,
+        finish_reason,
+        usage,
+    }
 }
 
 #[async_trait]

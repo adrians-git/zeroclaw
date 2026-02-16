@@ -229,6 +229,7 @@ impl Provider for OpenAiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
+        let api_key = self.api_key()?;
         let mut messages = Vec::new();
 
         if let Some(sys) = system_prompt {

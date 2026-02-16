@@ -1,4 +1,4 @@
-use crate::agent::tool_loop::{run_tool_loop, ToolLoopConfig};
+
 use crate::config::Config;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::observability::{self, Observer, ObserverEvent};
@@ -427,7 +427,7 @@ pub async fn run(
 
     // ── Build system prompt from workspace MD files (OpenClaw framework) ──
     let skills = crate::skills::load_skills(&config.workspace_dir);
-    let tool_descs: Vec<(&str, &str)> = vec![
+    let mut tool_descs: Vec<(&str, &str)> = vec![
         (
             "shell",
             "Execute terminal commands. Use when: running local checks, build/test commands, diagnostics. Don't use when: a safer dedicated tool exists, or command is destructive without approval.",
@@ -800,12 +800,12 @@ I will now call the tool with this payload:
 
         // System prompt preserved
         assert_eq!(history[0].role, "system");
-        assert_eq!(history[0].content, "system prompt");
+        assert_eq!(history[0].content.as_deref(), Some("system prompt"));
         // Trimmed to limit
         assert_eq!(history.len(), MAX_HISTORY_MESSAGES + 1); // +1 for system
                                                              // Most recent messages preserved
         let last = &history[history.len() - 1];
-        assert_eq!(last.content, format!("msg {}", MAX_HISTORY_MESSAGES + 19));
+        assert_eq!(last.content, Some(format!("msg {}", MAX_HISTORY_MESSAGES + 19)));
     }
 
     #[test]

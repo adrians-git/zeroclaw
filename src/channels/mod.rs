@@ -20,11 +20,13 @@ pub use telegram::TelegramChannel;
 pub use traits::Channel;
 pub use whatsapp::WhatsAppChannel;
 
-use crate::agent::tool_loop::{run_tool_loop, ToolLoopConfig};
+use crate::agent::tool_loop::ToolLoopConfig;
 use crate::config::Config;
 use crate::identity;
 use crate::memory::{self, Memory};
 use crate::providers::{self, Provider};
+use crate::security::SecurityPolicy;
+use crate::tools;
 use crate::util::truncate_with_ellipsis;
 use anyhow::Result;
 use std::fmt::Write;
@@ -530,8 +532,8 @@ pub async fn start_channels(config: Config) -> Result<()> {
     } else {
         None
     };
-    let tool_registry = tools::all_tools(&security, mem.clone(), composio_key, &config.browser);
-    let tool_loop_config = ToolLoopConfig {
+    let _tool_registry = tools::all_tools(&security, mem.clone(), composio_key, &config.browser, &config.agents, config.api_key.as_deref());
+    let _tool_loop_config = ToolLoopConfig {
         max_iterations: config.agent.max_tool_iterations,
         max_tokens: config.agent.max_tokens,
     };
