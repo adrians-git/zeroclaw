@@ -215,11 +215,20 @@ impl Provider for ReliableProvider {
                         return Ok(resp);
                     }
                     Err(e) => {
+                        let non_retryable = is_non_retryable(&e);
                         failures.push(format!(
                             "{provider_name} attempt {}/{}: {e}",
                             attempt + 1,
                             self.max_retries + 1
                         ));
+
+                        if non_retryable {
+                            tracing::warn!(
+                                provider = provider_name,
+                                "Non-retryable error, switching provider"
+                            );
+                            break;
+                        }
 
                         if attempt < self.max_retries {
                             tracing::warn!(

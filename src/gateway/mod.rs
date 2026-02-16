@@ -201,8 +201,6 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             &config.reliability,
         )?,
     )));
-    let _api_key: Option<Arc<str>> = config.api_key.as_deref().map(Arc::from);
-    let _reliability_config = Arc::new(config.reliability.clone());
     let model = config
         .default_model
         .clone()

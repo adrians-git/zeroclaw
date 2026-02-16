@@ -281,8 +281,7 @@ impl OpenAiCompatibleProvider {
             .await?;
 
         if !response.status().is_success() {
-            let error = response.text().await?;
-            anyhow::bail!("{} API error: {error}", self.name);
+            return Err(super::api_error(&self.name, response).await);
         }
 
         Ok(response.json().await?)

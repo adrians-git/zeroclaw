@@ -350,7 +350,7 @@ impl Provider for AnthropicProvider {
 
         let response = self
             .client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
@@ -359,8 +359,7 @@ impl Provider for AnthropicProvider {
             .await?;
 
         if !response.status().is_success() {
-            let error = response.text().await?;
-            anyhow::bail!("Anthropic API error: {error}");
+            return Err(super::api_error("Anthropic", response).await);
         }
 
         let chat_response: ChatResponse = response.json().await?;
@@ -371,14 +370,13 @@ impl Provider for AnthropicProvider {
         let api_key = self.api_key()?;
         let response = self
             .client
-            .get("https://api.anthropic.com/v1/models")
+            .get(format!("{}/v1/models", self.base_url))
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .send()
             .await?;
         if !response.status().is_success() {
-            let error = response.text().await?;
-            anyhow::bail!("Anthropic models API error: {error}");
+            return Err(super::api_error("Anthropic", response).await);
         }
         let body: serde_json::Value = response.json().await?;
         let mut models: Vec<ModelInfo> = body["data"]

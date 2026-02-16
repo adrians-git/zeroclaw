@@ -124,9 +124,13 @@ impl OpenRouterProvider {
             .header("Authorization", format!("Bearer {api_key}"))
             .header(
                 "HTTP-Referer",
-                "https://github.com/theonlyhennygod/zeroclaw",
+                &std::env::var("OPENROUTER_REFERER")
+                    .unwrap_or_else(|_| "https://github.com/zeroclaw-labs/zeroclaw".into()),
             )
-            .header("X-Title", "ZeroClaw")
+            .header(
+                "X-Title",
+                &std::env::var("OPENROUTER_TITLE").unwrap_or_else(|_| "ZeroClaw".into()),
+            )
             .json(request)
             .send()
             .await?;
@@ -274,9 +278,13 @@ impl Provider for OpenRouterProvider {
             .header("Authorization", format!("Bearer {api_key}"))
             .header(
                 "HTTP-Referer",
-                "https://github.com/theonlyhennygod/zeroclaw",
+                &std::env::var("OPENROUTER_REFERER")
+                    .unwrap_or_else(|_| "https://github.com/zeroclaw-labs/zeroclaw".into()),
             )
-            .header("X-Title", "ZeroClaw")
+            .header(
+                "X-Title",
+                &std::env::var("OPENROUTER_TITLE").unwrap_or_else(|_| "ZeroClaw".into()),
+            )
             .json(&request)
             .send()
             .await?;
@@ -327,9 +335,13 @@ impl Provider for OpenRouterProvider {
             .header("Authorization", format!("Bearer {api_key}"))
             .header(
                 "HTTP-Referer",
-                "https://github.com/theonlyhennygod/zeroclaw",
+                &std::env::var("OPENROUTER_REFERER")
+                    .unwrap_or_else(|_| "https://github.com/zeroclaw-labs/zeroclaw".into()),
             )
-            .header("X-Title", "ZeroClaw")
+            .header(
+                "X-Title",
+                &std::env::var("OPENROUTER_TITLE").unwrap_or_else(|_| "ZeroClaw".into()),
+            )
             .json(&request)
             .send()
             .await?;
