@@ -345,6 +345,9 @@ impl Provider for OpenAiProvider {
             "code-",
             "text-search-",
             "text-similarity-",
+            "canary-",
+            "gpt-4-base",
+            "gpt-3.5-turbo-instruct",
         ];
 
         let api_key = self.api_key()?;

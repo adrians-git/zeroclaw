@@ -412,14 +412,29 @@ impl Provider for OpenRouterProvider {
             let error = response.text().await?;
             anyhow::bail!("OpenRouter models API error: {error}");
         }
+        /// Substrings in model IDs that indicate non-chat models.
+        const NON_CHAT_PATTERNS: &[&str] = &[
+            "dall-e", "tts", "whisper", "embedding", "moderation",
+            "image", "audio", "vision", "stable-diffusion", "sdxl",
+            "midjourney", "flux", "musicgen", "bark",
+        ];
+
         let body: serde_json::Value = response.json().await?;
         let mut models: Vec<ModelInfo> = body["data"]
             .as_array()
             .map(|arr| {
                 arr.iter()
                     .filter_map(|m| {
+                        let id = m["id"].as_str()?;
+                        let id_lower = id.to_lowercase();
+                        let dominated = NON_CHAT_PATTERNS
+                            .iter()
+                            .any(|p| id_lower.contains(p));
+                        if dominated {
+                            return None;
+                        }
                         Some(ModelInfo {
-                            id: m["id"].as_str()?.to_string(),
+                            id: id.to_string(),
                             owned_by: m["owned_by"].as_str().map(ToString::to_string),
                         })
                     })
