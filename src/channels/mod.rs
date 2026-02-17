@@ -20,7 +20,7 @@ pub use telegram::TelegramChannel;
 pub use traits::Channel;
 pub use whatsapp::WhatsAppChannel;
 
-use crate::agent::tool_loop::{run_tool_loop, ToolLoopConfig};
+use crate::agent::tool_loop::{run_tool_loop_multimodal, ToolLoopConfig};
 use crate::config::Config;
 use crate::identity;
 use crate::memory::{self, Memory};
@@ -29,6 +29,7 @@ use crate::security::SecurityPolicy;
 use crate::tools;
 use crate::util::truncate_with_ellipsis;
 use anyhow::Result;
+use base64::Engine;
 use std::fmt::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -736,11 +737,21 @@ pub async fn start_channels(config: Config) -> Result<()> {
                 .await;
         }
 
-        let enriched_message = if memory_context.is_empty() {
+        let enriched_text = if memory_context.is_empty() {
             msg.content.clone()
         } else {
             format!("{memory_context}{}", msg.content)
         };
+
+        // Encode attached images as base64 for multimodal input
+        let image_pairs: Vec<(String, String)> = msg
+            .images
+            .iter()
+            .map(|img| {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&img.data);
+                (b64, img.media_type.clone())
+            })
+            .collect();
 
         let target_channel = channels.iter().find(|ch| ch.name() == msg.channel);
 
@@ -757,10 +768,11 @@ pub async fn start_channels(config: Config) -> Result<()> {
 
         let llm_result = tokio::time::timeout(
             Duration::from_secs(CHANNEL_MESSAGE_TIMEOUT_SECS),
-            run_tool_loop(
+            run_tool_loop_multimodal(
                 provider.as_ref(),
                 Some(&system_prompt),
-                &enriched_message,
+                &enriched_text,
+                &image_pairs,
                 &tool_registry,
                 security.as_ref(),
                 &model,

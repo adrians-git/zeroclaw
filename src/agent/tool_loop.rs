@@ -131,11 +131,55 @@ pub async fn run_tool_loop(
     config: &ToolLoopConfig,
     observer: Option<&dyn Observer>,
 ) -> anyhow::Result<ToolLoopResult> {
+    run_tool_loop_multimodal(
+        provider,
+        system_prompt,
+        initial_message,
+        &[],
+        tools,
+        security,
+        model,
+        temperature,
+        config,
+        observer,
+    )
+    .await
+}
+
+/// Like `run_tool_loop` but accepts optional image attachments for the initial message.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_tool_loop_multimodal(
+    provider: &dyn Provider,
+    system_prompt: Option<&str>,
+    initial_message: &str,
+    images: &[(String, String)], // (base64_data, media_type)
+    tools: &[Box<dyn Tool>],
+    security: &SecurityPolicy,
+    model: &str,
+    temperature: f64,
+    config: &ToolLoopConfig,
+    observer: Option<&dyn Observer>,
+) -> anyhow::Result<ToolLoopResult> {
     let tool_specs: Vec<ToolSpec> = tools.iter().map(|t| t.spec()).collect();
+
+    let initial_content = if images.is_empty() {
+        MessageContent::Text(initial_message.to_string())
+    } else {
+        let mut parts = vec![ContentPart::Text {
+            text: initial_message.to_string(),
+        }];
+        for (data, media_type) in images {
+            parts.push(ContentPart::Image {
+                data: data.clone(),
+                media_type: media_type.clone(),
+            });
+        }
+        MessageContent::Parts(parts)
+    };
 
     let mut messages = vec![ChatMessage {
         role: "user".to_string(),
-        content: Some(MessageContent::Text(initial_message.to_string())),
+        content: Some(initial_content),
         tool_calls: None,
         tool_call_id: None,
     }];

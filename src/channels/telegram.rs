@@ -361,6 +361,43 @@ impl TelegramChannel {
         tracing::info!("Telegram photo (URL) sent to {chat_id}: {url}");
         Ok(())
     }
+
+    /// Download a photo from Telegram by file_id.
+    /// Returns (media_type, bytes).
+    async fn download_photo(&self, file_id: &str) -> anyhow::Result<(String, Vec<u8>)> {
+        // Step 1: getFile to get the file_path
+        let url = self.api_url("getFile");
+        let body = serde_json::json!({ "file_id": file_id });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        let data: serde_json::Value = resp.json().await?;
+
+        let file_path = data
+            .get("result")
+            .and_then(|r| r.get("file_path"))
+            .and_then(|p| p.as_str())
+            .ok_or_else(|| anyhow::anyhow!("No file_path in getFile response"))?;
+
+        // Step 2: Download the file
+        let download_url = format!(
+            "https://api.telegram.org/file/bot{}/{}",
+            self.bot_token, file_path
+        );
+        let file_resp = self.client.get(&download_url).send().await?;
+        let bytes = file_resp.bytes().await?.to_vec();
+
+        // Detect media type from file extension
+        let media_type = if file_path.ends_with(".png") {
+            "image/png"
+        } else if file_path.ends_with(".gif") {
+            "image/gif"
+        } else if file_path.ends_with(".webp") {
+            "image/webp"
+        } else {
+            "image/jpeg"
+        };
+
+        Ok((media_type.to_string(), bytes))
+    }
 }
 
 #[async_trait]
@@ -463,9 +500,25 @@ impl Channel for TelegramChannel {
                         continue;
                     };
 
-                    let Some(text) = message.get("text").and_then(serde_json::Value::as_str) else {
+                    // Extract text (may be absent for photo-only messages)
+                    let text = message
+                        .get("text")
+                        .or_else(|| message.get("caption"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+
+                    // Extract photo (Telegram sends array of sizes, pick largest)
+                    let photo_file_id = message
+                        .get("photo")
+                        .and_then(|p| p.as_array())
+                        .and_then(|arr| arr.last())
+                        .and_then(|item| item.get("file_id"))
+                        .and_then(|v| v.as_str());
+
+                    // Skip messages with neither text nor photo
+                    if text.is_empty() && photo_file_id.is_none() {
                         continue;
-                    };
+                    }
 
                     let username_opt = message
                         .get("from")
@@ -500,6 +553,19 @@ Allowlist Telegram @username or numeric user ID, then run `zeroclaw onboard --ch
                         .map(|id| id.to_string())
                         .unwrap_or_default();
 
+                    // Download photo if present
+                    let mut images = Vec::new();
+                    if let Some(file_id) = photo_file_id {
+                        match self.download_photo(file_id).await {
+                            Ok((media_type, data)) => {
+                                images.push(super::traits::ChannelImage { data, media_type });
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to download Telegram photo: {e}");
+                            }
+                        }
+                    }
+
                     // Send "typing" indicator immediately when we receive a message
                     let typing_body = serde_json::json!({
                         "chat_id": &chat_id,
@@ -512,16 +578,22 @@ Allowlist Telegram @username or numeric user ID, then run `zeroclaw onboard --ch
                         .send()
                         .await; // Ignore errors for typing indicator
 
+                    let content = if text.is_empty() {
+                        "Describe this image.".to_string()
+                    } else {
+                        text.to_string()
+                    };
+
                     let msg = ChannelMessage {
                         id: Uuid::new_v4().to_string(),
                         sender: chat_id,
-                        content: text.to_string(),
+                        content,
                         channel: "telegram".to_string(),
                         timestamp: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs(),
-                        images: vec![],
+                        images,
                     };
 
                     if tx.send(msg).await.is_err() {
